@@ -19,12 +19,12 @@ Hand::Hand(int interface, int step, int dir, int *solenoid_pins, int *servo_pins
 
 // 
 void Hand::initializeFingers(int *solenoid_pins, int *servo_pins) {
-  for (int i = 0, j = 0; i < nr_fingers; i++, j+=2){
+  for (int i = 0, j = 0; i < NUM_OF_FINGERS; i++, j+=2){
     fingers[i].initialize_finger(solenoid_pins[j], solenoid_pins[j+1], servo_pins[i]);
 
     // Assign neighbors
     Finger* left = (i > 0) ? &fingers[i - 1] : nullptr;
-    Finger* right = (i < nr_fingers - 1) ? &fingers[i + 1] : nullptr;
+    Finger* right = (i < NUM_OF_FINGERS - 1) ? &fingers[i + 1] : nullptr;
     fingers[i].setNeighbors(left, right);
     
     getFingersInNormalPosition();
@@ -48,18 +48,26 @@ void Hand::setMotorParams(int acc, int maxSpeed){
 }
 
 // Returns the Finger object at "index" in the list of fingers
-Finger Hand::getFinger(int index){
-  return fingers[index];
+Finger& Hand::getFinger(int finger_index){
+  return fingers[finger_index];
 }
 
 // Rotates the finger at "index" in the list of fingers to newAngle
-void Hand::rotateFinger(int index, int newAngle){
-  fingers[index].rotate(newAngle);
+void Hand::rotateFinger(int finger_index, int newAngle){
+  fingers[finger_index].rotate(newAngle);
+}
+
+// Rotates the finger at "index" to reach the key at "key_index" away from finger's equilibrium position
+// Negative numbers -> rotation to the left; Positive numbers -> rotation to the right
+void Hand::rotateFingerToKey(int finger_index, float key_index){
+  // float becausehere may be half rotations, to rotate to black_keys
+  float angle = EQUILIBRIUM_ANGLE + key_index * ONE_KEY_ROTATION;
+  fingers[finger_index].rotate(angle);
 }
 
 // Resets finger rotation angle to EQUILIBRIUM_ANGLE
 void Hand::getFingersInNormalPosition(){
-  for (int i = 0; i < nr_fingers; i++){
+  for (int i = 0; i < NUM_OF_FINGERS; i++){
     fingers[i].rotate(EQUILIBRIUM_ANGLE);
   }
 }
@@ -75,7 +83,7 @@ void Hand::moveToKey(float key_index){
 
 // Returns true if any finger is playing a note, false otherwise
 bool Hand::isPlaying(){
-  for (int i = 0; i < nr_fingers; i++){
+  for (int i = 0; i < NUM_OF_FINGERS; i++){
     if(fingers[i].isPlaying) return true;
   }
   return false;
@@ -88,8 +96,9 @@ int Hand::readLimitSwitch(){
 
 // Update function; needs to be called in a loop; Ensures correct duration of notes without blocking
 void Hand::update() {
-  for (int i = 0; i < nr_fingers; i++) {
+  for (int i = 0; i < NUM_OF_FINGERS; i++) {
     fingers[i].update();
+    // Serial.print(i); Serial.print(" -> "); Serial.println(fingers[i].isPlaying);
   }
 }
 
@@ -122,7 +131,7 @@ void Hand::demo() {
     
     currentFinger++;
     
-    if (currentFinger >= nr_fingers) {
+    if (currentFinger >= NUM_OF_FINGERS) {
       moveToKey(current_key_index+aux);
       currentFinger = 0;
       pressBlack = !pressBlack;

@@ -27,7 +27,7 @@ class Finger{
     void initialize_finger(int front_solenoid_pin, int back_solenoid_pin, int servo_pin);
     void setNeighbors(Finger* left, Finger* right);
     void setWaitingOffset(int value);
-    void press_white_key(int duration);
+    void press_white_key(int duration, byte state=HIGH);
     void press_black_key(int duration);
     bool canRotate(int newAngle);
     void rotate(int newAngle);

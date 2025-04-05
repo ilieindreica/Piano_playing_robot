@@ -1,6 +1,7 @@
 #include "HardwareSerial.h"
 #include "Arduino.h"
 #include "Finger.h"
+#include "Piano-robot_setup_config.h"
 
 
 Finger::Finger(): angle(EQUILIBRIUM_ANGLE), leftNeighbor(nullptr), rightNeighbor(nullptr) {}
@@ -35,12 +36,12 @@ void Finger::setWaitingOffset(int value) {
   waiting_offset = value;
 }
 
-void Finger::press_white_key(int duration){
+void Finger::press_white_key(int duration, byte state=HIGH){
   // Make sure method doesn't get called till it finished playing
   if (isPlaying == false){
     this->duration = duration;
     startTime = millis();
-    digitalWrite(front_solenoid_pin, HIGH);
+    digitalWrite(front_solenoid_pin, state);
     front_on = true;
     isPlaying = true;
   }
@@ -70,11 +71,14 @@ void Finger::rotate(int newAngle) {
 }
 
 void Finger::update() {
+  // Serial.print("start time: "); Serial.print(startTime); Serial.print("   duration: "); Serial.println(duration);
   if (front_on && (millis() - startTime >= duration)){
     digitalWrite(front_solenoid_pin, LOW);
     digitalWrite(back_solenoid_pin, LOW);
-    front_on = false;
-    isPlaying = false;
+    if (millis() - startTime >= duration + TIME_BETWEEN_KEY_PRESSES){
+      front_on = false;
+      isPlaying = false;
+    }
   }
 
   if (waiting_on && (millis() - waitingStart >= waiting_offset)){

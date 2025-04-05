@@ -6,14 +6,15 @@
 #include "Piano-robot_setup_config.h"
 
 class Hand{
-  private:
-    static const int nr_fingers = 5;
-    Finger fingers[nr_fingers];
-    int limit_switch_pin;
-    float current_key_index;
-  
   public:
     AccelStepper motor;
+
+    enum class State {
+      IDLE,
+      CHANGING_POSTURE,
+      READY_TO_PLAY,
+      PLAYING
+    };
 
     Hand();
     Hand(int interface, int step, int dir);
@@ -23,9 +24,10 @@ class Hand{
     void setMotorParams(int acc, int maxSpeed);
     void setKeyIndex(float index);
 
-    Finger getFinger(int index);
+    Finger& getFinger(int finger_index);
     void getFingersInNormalPosition();
-    void rotateFinger(int index, int newAngle);
+    void rotateFinger(int finger_index, int newAngle);
+    void rotateFingerToKey(int finger_index, float key_index);
 
     void moveToKey(float key_index);
     void waitToFinishPlay();
@@ -35,6 +37,13 @@ class Hand{
 
     void update();
     void demo();
+
+  private:
+    Finger fingers[NUM_OF_FINGERS];
+    int limit_switch_pin;
+    float current_key_index;
+    State current_state = State::IDLE;
+  
 };
 
 
