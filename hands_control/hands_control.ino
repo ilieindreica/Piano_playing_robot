@@ -59,12 +59,6 @@ void setup() {
   left_hand.setFingers(left_solenoid_pins, left_servo_pins);
   left_hand.setLimitSwitch(left_button_pin);
   left_hand.setMotorParams(acc, maxSpeed);
-
-
-  Serial.println(right_hand.command_list_length);
-  for (int i = 0; i < right_hand.command_list_length; i++){
-    printCommandStruct(right_hand.commands[i]);
-  }
   
   homing();
 
@@ -77,12 +71,12 @@ void loop() {
   State rightState = right_hand.getState();
 
   if (rightState == State::READY_TO_PLAY &&
-      (leftState == State::READY_TO_PLAY || leftState == State::PLAYING || leftState == State::PRESSING)) {
+      (leftState == State::READY_TO_PLAY || leftState == State::PLAYING)) {
       right_hand.setState(State::PRESSING);
   }
 
   if (leftState == State::READY_TO_PLAY &&
-      (rightState == State::READY_TO_PLAY || rightState == State::PLAYING || rightState == State::PRESSING)) {
+      (rightState == State::READY_TO_PLAY || rightState == State::PLAYING)) {
       left_hand.setState(State::PRESSING);
   }
 

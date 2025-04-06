@@ -147,6 +147,11 @@ void Hand::resetDecodedCommand() {
 }
 
 
+void Hand::increaseCommandIndex(){
+  command_index++;
+}
+
+
 // Update function; needs to be called in a loop; Updates the hand state and ensures correct duration of notes without blocking
 void Hand::update() {
   // STATE MACHINE
@@ -182,10 +187,10 @@ void Hand::update() {
 
     case State::PLAYING:
       if (!isPlaying()){
-        current_state = State::WAITING;
         waiting_start = millis();
         waiting_time = TIME_FOR_SOLENOID_RETRACTION;
         state_after_waiting = State::IDLE;
+        current_state = State::WAITING;
       }
       break;
     

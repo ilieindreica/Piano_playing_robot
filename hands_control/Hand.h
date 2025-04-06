@@ -65,6 +65,7 @@ class Hand{
     void moveToKey(float key_index);
     DecodedCommand decodeCommand(CommandStruct cmd);
     void resetDecodedCommand();
+    void increaseCommandIndex();
     
     bool isPlaying();
     int readLimitSwitch();
