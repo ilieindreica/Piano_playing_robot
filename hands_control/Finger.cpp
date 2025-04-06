@@ -6,7 +6,7 @@
 
 Finger::Finger(): angle(EQUILIBRIUM_ANGLE), leftNeighbor(nullptr), rightNeighbor(nullptr) {}
 
-void Finger::initialize_finger(int front_solenoid_pin, int back_solenoid_pin, int servo_pin) {
+void Finger::setFinger(int front_solenoid_pin, int back_solenoid_pin, int servo_pin) {
   this->front_solenoid_pin = front_solenoid_pin;
   this->back_solenoid_pin = back_solenoid_pin;
   this->servo_pin = servo_pin;
@@ -75,10 +75,8 @@ void Finger::update() {
   if (front_on && (millis() - startTime >= duration)){
     digitalWrite(front_solenoid_pin, LOW);
     digitalWrite(back_solenoid_pin, LOW);
-    if (millis() - startTime >= duration + TIME_BETWEEN_KEY_PRESSES){
-      front_on = false;
-      isPlaying = false;
-    }
+    front_on = false;
+    isPlaying = false;
   }
 
   if (waiting_on && (millis() - waitingStart >= waiting_offset)){

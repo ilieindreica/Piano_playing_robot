@@ -24,7 +24,7 @@ class Finger{
   public:
     bool isPlaying;
     Finger();
-    void initialize_finger(int front_solenoid_pin, int back_solenoid_pin, int servo_pin);
+    void setFinger(int front_solenoid_pin, int back_solenoid_pin, int servo_pin);
     void setNeighbors(Finger* left, Finger* right);
     void setWaitingOffset(int value);
     void press_white_key(int duration, byte state=HIGH);

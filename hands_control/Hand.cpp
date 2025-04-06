@@ -14,13 +14,17 @@ Hand::Hand(int interface, int step, int dir) : motor(interface, step, dir){
 
 //
 Hand::Hand(int interface, int step, int dir, int *solenoid_pins, int *servo_pins) : motor(interface, step, dir) {
-  initializeFingers(solenoid_pins, servo_pins);
+  command_index = 0;
+  commands = nullptr;
+  command_list_length = 0;
+  setFingers(solenoid_pins, servo_pins);
 }
 
+
 // 
-void Hand::initializeFingers(int *solenoid_pins, int *servo_pins) {
+void Hand::setFingers(int *solenoid_pins, int *servo_pins) {
   for (int i = 0, j = 0; i < NUM_OF_FINGERS; i++, j+=2){
-    fingers[i].initialize_finger(solenoid_pins[j], solenoid_pins[j+1], servo_pins[i]);
+    fingers[i].setFinger(solenoid_pins[j], solenoid_pins[j+1], servo_pins[i]);
 
     // Assign neighbors
     Finger* left = (i > 0) ? &fingers[i - 1] : nullptr;
@@ -31,21 +35,35 @@ void Hand::initializeFingers(int *solenoid_pins, int *servo_pins) {
   }
 }
 
+
 // Set the pin for the limit switch
 void Hand::setLimitSwitch(int pin){
   limit_switch_pin = pin;
   pinMode(limit_switch_pin, INPUT_PULLUP);
 }
 
+
 void Hand::setKeyIndex(float index){
   current_key_index = index;
 }
+
 
 // Set Acceleration and MaxSpeed for motor
 void Hand::setMotorParams(int acc, int maxSpeed){
   motor.setAcceleration(acc);
   motor.setMaxSpeed(maxSpeed);
 }
+
+
+void Hand::setState(State newState){
+  current_state = newState;
+}
+
+
+Hand::State Hand::getState() const{
+  return current_state;
+}
+
 
 // Returns the Finger object at "index" in the list of fingers
 Finger& Hand::getFinger(int finger_index){
@@ -74,7 +92,6 @@ void Hand::getFingersInNormalPosition(){
 
 //
 void Hand::moveToKey(float key_index){
-  waitToFinishPlay();
   current_key_index = key_index;
   key_index = constrain(key_index, 0, NUM_OF_WHITE_KEYS);
   motor.moveTo(key_index * ONE_KEY_STEP);
@@ -94,18 +111,94 @@ int Hand::readLimitSwitch(){
   return digitalRead(limit_switch_pin);
 }
 
-// Update function; needs to be called in a loop; Ensures correct duration of notes without blocking
-void Hand::update() {
+
+///Perform necessary operations to decode commands
+Hand::DecodedCommand Hand::decodeCommand(Hand::CommandStruct cmd){
+  DecodedCommand output;
+
+  output.position = cmd.position / 2.0f;
+
+  for(int i = 0; i < NUM_OF_FINGERS; i++){
+    output.angles[i] = cmd.angles[i] / 2.0f;
+
+    if (cmd.durations[i] != 0){
+      output.durations[i] = 1.0f / cmd.durations[i] * TIME_PER_BEAT;
+    }
+    else{
+      output.durations[i] = 0;
+    }
+
+    output.back_solenoids_states[i] = cmd.back_solenoids_states[i];
+    output.front_solenoids_states[i] = cmd.front_solenoids_states[i];
+  }
+
+  return output;
+}
+
+
+void Hand::resetDecodedCommand() {
+  decoded_command.position = 0;
   for (int i = 0; i < NUM_OF_FINGERS; i++) {
-    fingers[i].update();
-    // Serial.print(i); Serial.print(" -> "); Serial.println(fingers[i].isPlaying);
+    decoded_command.angles[i] = 0;
+    decoded_command.back_solenoids_states[i] = 0;
+    decoded_command.front_solenoids_states[i] = 0;
+    decoded_command.durations[i] = 0;
   }
 }
 
-// Used primarily before moving the hand, to prevent collision of fingers with the keys if they are still active
-void Hand::waitToFinishPlay(){
-  while(isPlaying()){
-    update();
+
+// Update function; needs to be called in a loop; Updates the hand state and ensures correct duration of notes without blocking
+void Hand::update() {
+  // STATE MACHINE
+  switch(current_state){
+    case State::IDLE:
+      if (command_index < command_list_length){ 
+        decoded_command = decodeCommand(commands[command_index]);
+        command_index++;
+        current_state = State::CHANGING_POSTURE;
+      }
+      else{
+        current_state = State::FINISHED;
+      }
+      break;
+
+    case State::CHANGING_POSTURE:
+      /// add rotation
+      /// add extension
+      moveToKey(decoded_command.position);
+      current_state = State::READY_TO_PLAY;
+      break;
+
+    case State::READY_TO_PLAY:
+      // current_state = State::PRESSING;
+      break;
+
+    case State::PRESSING:
+      for (int i = 0; i < NUM_OF_FINGERS; i++){
+        fingers[i].press_white_key(decoded_command.durations[i], decoded_command.front_solenoids_states[i]);
+      }
+      current_state = State::PLAYING;
+      break;
+
+    case State::PLAYING:
+      if (!isPlaying()){
+        current_state = State::WAITING;
+        waiting_start = millis();
+        waiting_time = TIME_FOR_SOLENOID_RETRACTION;
+        state_after_waiting = State::IDLE;
+      }
+      break;
+    
+    case State::WAITING:
+      if (millis() - waiting_start >= waiting_time){
+        current_state = state_after_waiting;
+      }
+
+  }
+  
+  // Update fingers
+  for (int i = 0; i < NUM_OF_FINGERS; i++) {
+    fingers[i].update();
   }
 }
 

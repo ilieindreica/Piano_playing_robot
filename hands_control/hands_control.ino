@@ -3,6 +3,8 @@
 #include "Hand.h"
 #include "Piano-robot_setup_config.h"
 
+using State = Hand::State;
+
 /* ======= DEFINE STATEMENTS ======= */
   #define dir_right 4
   #define step_right 5
@@ -19,15 +21,7 @@
 /***************************/
 
 /* Structs */
-  struct command_struct{
-    uint8_t position;
-    int8_t angles[NUM_OF_FINGERS];
-    uint8_t back_solenoids_states[NUM_OF_FINGERS];
-    uint8_t front_solenoids_states[NUM_OF_FINGERS];
-    uint8_t durations[NUM_OF_FINGERS];
-  };
-  command_struct* left_commands = nullptr;
-  command_struct* right_commands = nullptr;
+
 /* ********************** */
 
 /* Pin lists */
@@ -38,71 +32,58 @@
 /* ***************** */
 
 /* Global variables */
-  int left_list_length = 0;
-  int right_list_length = 0;
-  int left_command_index = 0;
-  int right_command_index = 0;
+
 /* **************** */
 
 /* Declarations for functions */
   void homing(int speed=500);
+  void readCommands(Hand &hand);
   void moveToKey(AccelStepper &motor, int key_index);
-  void execute_command(Hand &hand, command_struct &command);
   void move_hands(int pos_left, int pos_right);
 /* ************************ */
 
 void setup() {
   Serial.begin(115200);
   Serial.println("Arduino Ready!");
-  Serial.print("Free Mem: ");
-  Serial.println(freeMemory());
 
   // READ DATA from Serial
-  readCommands();
+  readCommands(left_hand);
+  readCommands(right_hand);
 
   // Initialize hands
   float maxSpeed = 4000.0, acc = 10000.0;
-  right_hand.initializeFingers(right_solenoid_pins, right_servo_pins);
+  right_hand.setFingers(right_solenoid_pins, right_servo_pins);
   right_hand.setLimitSwitch(right_button_pin);
   right_hand.setMotorParams(acc, maxSpeed);
 
-  left_hand.initializeFingers(left_solenoid_pins, left_servo_pins);
+  left_hand.setFingers(left_solenoid_pins, left_servo_pins);
   left_hand.setLimitSwitch(left_button_pin);
   left_hand.setMotorParams(acc, maxSpeed);
+
+
+  Serial.println(right_hand.command_list_length);
+  for (int i = 0; i < right_hand.command_list_length; i++){
+    printCommandStruct(right_hand.commands[i]);
+  }
   
   homing();
 
-  // move_hands(left_commands[0].position / 2.0f, right_commands[0].position / 2.0f);
-//   right_hand.motor.moveTo(right_commands[0].position / 2.0f * ONE_KEY_STEP);
-//   while(right_hand.motor.distanceToGo() != 0){
-// right_hand.motor.run();
-//   }
-
-  Serial.print("Free mem: ");
-  Serial.println(freeMemory());
-  Serial.println("Exit setup");
 }
 
 
 void loop() {
 
-  if (!right_hand.isPlaying() && right_command_index < right_list_length){
-    right_hand.moveToKey(right_commands[right_command_index].position / 2.0f);
+  State leftState  = left_hand.getState();
+  State rightState = right_hand.getState();
+
+  if (rightState == State::READY_TO_PLAY &&
+      (leftState == State::READY_TO_PLAY || leftState == State::PLAYING || leftState == State::PRESSING)) {
+      right_hand.setState(State::PRESSING);
   }
 
-  if (!left_hand.isPlaying() && left_command_index < left_list_length){
-    left_hand.moveToKey(left_commands[left_command_index].position / 2.0f);
-  }
-
-  if (!right_hand.isPlaying() && right_command_index < right_list_length){
-    execute_command(right_hand, right_commands[right_command_index]);
-    right_command_index++;
-    Serial.println(right_command_index);
-  }
-
-  if (!left_hand.isPlaying() && left_command_index < left_list_length){
-    execute_command(left_hand, left_commands[left_command_index]);
-    left_command_index++;
+  if (leftState == State::READY_TO_PLAY &&
+      (rightState == State::READY_TO_PLAY || rightState == State::PLAYING || rightState == State::PRESSING)) {
+      left_hand.setState(State::PRESSING);
   }
 
   right_hand.update();
@@ -142,34 +123,37 @@ void homing(int speed=500){
 }
 
 
-void readCommands(){
+void readCommands(Hand &hand){
   byte one_byte = 8;
+  const int timeoutIterations = 1000;  // 1000 iterations * 1ms delay = approx. 1 second
+  int counter = 0;
+
+  // Wait for position byte
+  while (Serial.available() < one_byte && counter < timeoutIterations) {
+    delay(1);  
+    counter++;
+  }
+
+  // Exit if no data is available
+  if (counter > timeoutIterations){
+    return;  // It may happen that left_hand has no commands (for songs played with only one hand); return if waiting is too long
+  }
   
-  while (Serial.available() < one_byte) {
-    // Wait until data arrives
-  }
-  
+  // Read the length of hand commands
   for (int i = 0; i < 4; i++) {
-    left_list_length = (left_list_length << one_byte) | Serial.read();  
+    hand.command_list_length = (hand.command_list_length << one_byte) | Serial.read();  
   }
 
-  for (int i = 0; i < 4; i++) {
-    right_list_length = (right_list_length << one_byte) | Serial.read();  
-  }
+  hand.commands = new Hand::CommandStruct[hand.command_list_length];
 
-  left_commands = new command_struct[left_list_length];
-  right_commands = new command_struct[right_list_length];
-
-  for (int i = 0; i < left_list_length; i++){
-    readCommandStruct(left_commands[i]);
-  }
-  for (int i = 0; i < right_list_length; i++){
-    readCommandStruct(right_commands[i]);
+  // Read the commands for hand
+  for (int i = 0; i < hand.command_list_length; i++){
+    readCommandStruct(hand.commands[i]);
   }
 }
 
 
-void readCommandStruct(command_struct &command) {
+void readCommandStruct(Hand::CommandStruct &command) {
     // Wait for position byte
     while (Serial.available() < 1);
     command.position = Serial.read();
@@ -197,7 +181,7 @@ void readCommandStruct(command_struct &command) {
 }
 
 
-void printCommandStruct(const command_struct &cmd) {
+void printCommandStruct(const Hand::CommandStruct &cmd) {
     Serial.print("Position: ");
     Serial.println(cmd.position);
 
@@ -230,60 +214,5 @@ void printCommandStruct(const command_struct &cmd) {
     Serial.println();
 }
 
-
-// void move_hands(float pos_left, float pos_right){
-//   left_hand.motor.moveTo(pos_left * ONE_KEY_STEP);
-//   right_hand.motor.moveTo(pos_right * ONE_KEY_STEP);
-  
-//   while (left_hand.motor.distanceToGo() != 0 || right_hand.motor.distanceToGo() != 0) {
-//     left_hand.motor.run();
-//     right_hand.motor.run();
-//   }
-// }
-
-
-void execute_command(Hand &hand, command_struct &command){
-  // hand.moveToKey(command.position / 2.0f);
-  // Serial.print("Pos: "); Serial.println(command.position / 2.0f);
-
-  // Rotate the fingers
-  // for (int i = 0; i < NUM_OF_FINGERS; i++){
-  //   // Angles where multiplied by 2 to make them ints for easier storage and to preserve the data at the same time
-  //   // (note: angles in command are just an index determining how far away is the key to which to rotate, and in which direction)
-  //   float key_index = command.angles[i] / 2.0f;  
-  //   hand.rotateFingerToKey(i, key_index);
-  // }
-
-  // Press black keys
-  // for (int i = 0; i < NUM_OF_FINGERS; i++){
-  //   if (command.back_solenoids_states[i]){
-  //     float duration = 0;
-  //     if (command.durations[i] != 0){
-  //       duration = 1.0f / command.durations[i] * TIME_PER_BEAT;
-  //     }
-  //     hand.getFinger(i).press_black_key(duration);
-  //   }
-  // }
-
-  // Press white keys; As press_black_key() takes care of the state for the front solenoid, don't activate it again
-  for (int i = 0; i < NUM_OF_FINGERS; i++){
-    // if (!command.back_solenoids_states[i]){
-      float duration = 0;
-      if (command.durations[i] != 0){
-        duration = 1.0f / command.durations[i] * TIME_PER_BEAT;
-      }
-      hand.getFinger(i).press_white_key(duration, command.front_solenoids_states[i]);
-    // }
-  }
-}
-
-
-extern char __bss_end;
-extern char *__brkval;
-// Tells how much RAM is available
-int freeMemory() {
-    char top;
-    return &top - (__brkval == 0 ? &__bss_end : __brkval);
-}
 
 

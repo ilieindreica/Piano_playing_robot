@@ -5,10 +5,10 @@
 #define NUM_OF_WHITE_KEYS 36  // Needed to know the distance the robot can travel
 #define NUM_OF_WHITE_KEYS_IN_OCTAVE 7
 #define MAIN_OCTAVE 3  // Should be at least 2, to also make room for the hand that plays the bass
-#define TEMPO 80  // Considered for the whole note
+#define TEMPO 60  // Considered for the whole note
 #define TIME_PER_BEAT (60000 / TEMPO)  // milliseconds
 
-#define TIME_BETWEEN_KEY_PRESSES 100  // A small time delay to give solenoids that press the keys time to retract (useful when needed to press same key multimple times in a row) 
+#define TIME_FOR_SOLENOID_RETRACTION 100  // A small time delay to give solenoids that press the keys time to retract (useful when needed to press same key multimple times in a row) 
 
   /* CALCULATION EXAMPLE for one_key_step: 
     In full-step mode, it takes 200 steps for 1 revolution. The GT2-gear has, for example, 20 theet, with 2mm step.
