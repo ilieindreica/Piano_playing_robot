@@ -8,7 +8,7 @@
 #define TEMPO 20  // Considered for the whole note
 #define TIME_PER_BEAT (60000 / TEMPO)  // milliseconds
 
-#define TIME_FOR_SOLENOID_RETRACTION 100  // A small time delay to give solenoids that press the keys time to retract (useful when needed to press same key multimple times in a row) 
+#define TIME_FOR_SOLENOID_RETRACTION 50  // A small time delay to give solenoids that press the keys time to retract (useful when needed to press same key multimple times in a row) 
 
   /* CALCULATION EXAMPLE for one_key_step: 
     In full-step mode, it takes 200 steps for 1 revolution. The GT2-gear has, for example, 20 theet, with 2mm step.
@@ -20,6 +20,9 @@
 #define DISTANCE_BETWEEN_KEYS 23  // mm
 #define ONE_KEY_STEP (STEPS_PER_REVOLUTION * DISTANCE_BETWEEN_KEYS / (NUM_OF_TEETH * TEETH_STEP))
 #define ONE_KEY_ROTATION 10  // num of degrees to rotate one key to the left or to the right
+#define LIMIT_ANGLE_DEVIATION 15
+#define LIMIT_OVERLAP_ANGLE 5
+
 
 // 1/2 because the middles of the fingers stay at integer indices (the keys coordinates, counted in ONE_KEY_STEPs) 
 // and the edge is 1/2*ONE_KEY_STEP from the middle of a finger

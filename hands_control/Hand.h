@@ -40,6 +40,9 @@ class Hand{
     AccelStepper motor;
     int command_list_length = 0;
     CommandStruct* commands = nullptr;
+    int command_index = 0;
+    unsigned long start = 0, stop = 0, ellapsed = 0;
+    Hand* the_other_hand = nullptr;
     
     // Constructors
     Hand();
@@ -48,16 +51,22 @@ class Hand{
 
     // Setters
     void setFingers(int *solenoid_pins, int *servo_pins);
+    void setEquilibriumAngles(int *angles);
     void setLimitSwitch(int pin);
     void setMotorParams(int acc, int maxSpeed);
     void setKeyIndex(float index);
     void setState(State newState);
     void setCommand();
+    void setTimePerBeat(float tpb);
+    void setHandedness(char h);
+    void setTheOtherHand(Hand& other);
 
     // Getters
     State getState() const;
     Finger& getFinger(int finger_index);
     void getFingersInNormalPosition();
+    float getCompensation();
+    char getHandedness();
 
     // Actions
     void rotateFinger(int finger_index, int newAngle);
@@ -66,22 +75,27 @@ class Hand{
     DecodedCommand decodeCommand(CommandStruct cmd);
     void resetDecodedCommand();
     void increaseCommandIndex();
+    void increaseFingerDuration(float);
+    void resetCompensation();
     
     bool isPlaying();
     int readLimitSwitch();
 
-    void update();
+    void update(unsigned long reference_time=millis());
     void demo();
+    const char* Hand::stateToStr(State s);
 
   private:
     Finger fingers[NUM_OF_FINGERS];
     int limit_switch_pin;
     float current_key_index;
     State current_state = State::IDLE;
-    int command_index = 0;
     unsigned long waiting_start;
-    int waiting_time;
+    float waiting_time;
     State state_after_waiting;
+    float compensation = 0;
+    float time_per_beat = 0;
+    char handedness_character;
   
 };
 

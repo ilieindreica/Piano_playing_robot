@@ -17,6 +17,7 @@ Hand::Hand(int interface, int step, int dir, int *solenoid_pins, int *servo_pins
   command_index = 0;
   commands = nullptr;
   command_list_length = 0;
+  compensation = 0;
   setFingers(solenoid_pins, servo_pins);
 }
 
@@ -30,8 +31,6 @@ void Hand::setFingers(int *solenoid_pins, int *servo_pins) {
     Finger* left = (i > 0) ? &fingers[i - 1] : nullptr;
     Finger* right = (i < NUM_OF_FINGERS - 1) ? &fingers[i + 1] : nullptr;
     fingers[i].setNeighbors(left, right);
-    
-    getFingersInNormalPosition();
   }
 }
 
@@ -60,6 +59,28 @@ void Hand::setState(State newState){
 }
 
 
+void Hand::setTimePerBeat(float tpb){
+  time_per_beat = tpb;
+}
+
+
+void Hand::setEquilibriumAngles(int *angles){
+  for (int i = 0; i < NUM_OF_FINGERS; i++){
+    fingers[i].setEquilibriumAngle(angles[i]);
+  }
+}
+
+
+void Hand::setHandedness(char h){
+  handedness_character = h;
+}
+
+
+void Hand::setTheOtherHand(Hand &other){
+  the_other_hand = &other;
+}
+
+
 Hand::State Hand::getState() const{
   return current_state;
 }
@@ -70,23 +91,35 @@ Finger& Hand::getFinger(int finger_index){
   return fingers[finger_index];
 }
 
+
+char Hand::getHandedness(){
+  return handedness_character;
+}
+
+
 // Rotates the finger at "index" in the list of fingers to newAngle
 void Hand::rotateFinger(int finger_index, int newAngle){
   fingers[finger_index].rotate(newAngle);
 }
 
 // Rotates the finger at "index" to reach the key at "key_index" away from finger's equilibrium position
-// Negative numbers -> rotation to the left; Positive numbers -> rotation to the right
+// Negative numbers -> rotation to the right; Positive numbers -> rotation to the left
 void Hand::rotateFingerToKey(int finger_index, float key_index){
   // float becausehere may be half rotations, to rotate to black_keys
-  float angle = EQUILIBRIUM_ANGLE + key_index * ONE_KEY_ROTATION;
-  fingers[finger_index].rotate(angle);
+  int eq_angle = fingers[finger_index].getEquilibriumAngle();
+  float angle = eq_angle + key_index * ONE_KEY_ROTATION;
+  // if(angle != eq_angle){
+  //   Serial.print(command_index); Serial.print("-> ");
+  //   Serial.println(angle);
+  // }
+  fingers[finger_index].rotate(angle, true);
 }
 
 // Resets finger rotation angle to EQUILIBRIUM_ANGLE
 void Hand::getFingersInNormalPosition(){
   for (int i = 0; i < NUM_OF_FINGERS; i++){
-    fingers[i].rotate(EQUILIBRIUM_ANGLE);
+    int eq_angle = fingers[i].getEquilibriumAngle();
+    fingers[i].rotate(eq_angle, true);
   }
 }
 
@@ -117,12 +150,11 @@ Hand::DecodedCommand Hand::decodeCommand(Hand::CommandStruct cmd){
   DecodedCommand output;
 
   output.position = cmd.position / 2.0f;
-
   for(int i = 0; i < NUM_OF_FINGERS; i++){
     output.angles[i] = cmd.angles[i] / 2.0f;
 
     if (cmd.durations[i] != 0){
-      output.durations[i] = 1.0f / cmd.durations[i] * TIME_PER_BEAT;
+      output.durations[i] = 1.0f / cmd.durations[i] * time_per_beat;
     }
     else{
       output.durations[i] = 0;
@@ -152,58 +184,131 @@ void Hand::increaseCommandIndex(){
 }
 
 
+void Hand::increaseFingerDuration(float increase){
+  for (int i = 0; i < NUM_OF_FINGERS; i++){
+    fingers[i].increaseDuration(increase);
+  }
+}
+
+
+float Hand::getCompensation(){
+  return compensation;
+}
+
+
+void Hand::resetCompensation(){
+  compensation = 0;
+}
+
+
 // Update function; needs to be called in a loop; Updates the hand state and ensures correct duration of notes without blocking
-void Hand::update() {
+void Hand::update(unsigned long reference_time=millis()) {
+  // Serial.print("STATE: "); Serial.print(static_cast<int>(current_state)); Serial.println(stateToStr(current_state));
+
   // STATE MACHINE
   switch(current_state){
-    case State::IDLE:
-      if (command_index < command_list_length){ 
+    // IDLE
+    case State::IDLE:{
+      start = millis();
+      if (command_index < command_list_length){
         decoded_command = decodeCommand(commands[command_index]);
-        command_index++;
         current_state = State::CHANGING_POSTURE;
       }
       else{
         current_state = State::FINISHED;
       }
       break;
+    }
 
-    case State::CHANGING_POSTURE:
+    // CHANGING POSTURE
+    case State::CHANGING_POSTURE:{
       /// add rotation
+      unsigned long compensation_start = millis();
+      for (int i = 0; i < NUM_OF_FINGERS; i++){
+        rotateFingerToKey(i, decoded_command.angles[i]);
+      }
+      delay(10);
+      
       /// add extension
+
       moveToKey(decoded_command.position);
+
+      unsigned long compensation_end = millis();
+      compensation += compensation_end - compensation_start;
       current_state = State::READY_TO_PLAY;
       break;
+    }
 
-    case State::READY_TO_PLAY:
-      // current_state = State::PRESSING;
+    // READY TO PLAY
+    case State::READY_TO_PLAY:{
+      State other_state = the_other_hand->getState();
+      if (other_state == State::READY_TO_PLAY || other_state == State::PLAYING || other_state == State::FINISHED ||
+          other_state == State::PRESSING) {
+        current_state = State::PRESSING;
+        resetCompensation();
+      }
       break;
+    }
 
-    case State::PRESSING:
+    // PRESSING
+    case State::PRESSING:{
+      Serial.print(command_index); Serial.print(" "); Serial.print(handedness_character); Serial.println(millis());
+      if (handedness_character == 'l'){
+        Serial.println();
+      }
+
       for (int i = 0; i < NUM_OF_FINGERS; i++){
         fingers[i].press_white_key(decoded_command.durations[i], decoded_command.front_solenoids_states[i]);
       }
       current_state = State::PLAYING;
+      command_index++;
       break;
+    }
 
-    case State::PLAYING:
-      if (!isPlaying()){
-        waiting_start = millis();
+    // PLAYING
+    case State::PLAYING:{
+      // Before exiting PLAYING state, check if there exist some compensations that need to be taken care of (i.e. the state must be prolonged)
+      if(the_other_hand->getState() == State::READY_TO_PLAY){
+        increaseFingerDuration(the_other_hand->getCompensation());
+        the_other_hand->resetCompensation();
+      }
+      else if (!isPlaying()){
+        waiting_start = reference_time;
         waiting_time = TIME_FOR_SOLENOID_RETRACTION;
+        compensation += TIME_FOR_SOLENOID_RETRACTION;
         state_after_waiting = State::IDLE;
         current_state = State::WAITING;
       }
       break;
+    }
     
-    case State::WAITING:
+    // WAITING
+    case State::WAITING:{
       if (millis() - waiting_start >= waiting_time){
         current_state = state_after_waiting;
       }
+      break;
+    }
 
   }
   
   // Update fingers
   for (int i = 0; i < NUM_OF_FINGERS; i++) {
     fingers[i].update();
+  }
+}
+
+
+const char* Hand::stateToStr(State s) {
+  switch (s) {
+    case State::IDLE: return "IDLE";
+    case State::WAITING: return "WAITING";
+    case State::CHANGING_POSTURE: return "CHANGING_POSTURE";
+    case State::READY_TO_PLAY: return "READY_TO_PLAY";
+    case State::PRESSING: return "PRESSING";
+    case State::PLAYING: return "PLAYING";
+    case State::FINISHED: return "FINISHED";
+    default: return "UNKNOWN";
   }
 }
 
@@ -237,6 +342,8 @@ void Hand::demo() {
     }
   }
 }
+
+
 
 
 // void Hand::demo() {

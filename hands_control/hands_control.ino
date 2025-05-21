@@ -27,12 +27,16 @@ using State = Hand::State;
 /* Pin lists */
   int right_solenoid_pins[] = {44, 45, 46, 47, 48, 49, 50, 51, 52, 53};
   int right_servo_pins[] = {39, 40, 41, 42, 43};
+  int right_equilibrium_angles[] = {78, 80, 82, 80, 85};
   int left_solenoid_pins[] = {29, 30, 31, 32, 33, 34, 35, 36, 37, 38};
   int left_servo_pins[] = {24, 25, 26, 27, 28};
+  int left_equilibrium_angles[] = {80, 73, 82, 85, 82};
 /* ***************** */
 
 /* Global variables */
-
+int tempo;
+float time_per_beat = 0;
+bool is_double_handed = true;
 /* **************** */
 
 /* Declarations for functions */
@@ -47,18 +51,36 @@ void setup() {
   Serial.println("Arduino Ready!");
 
   // READ DATA from Serial
-  readCommands(left_hand);
+  tempo = read_int_from_serial();
+  time_per_beat = 60000 / tempo;
+  while(!Serial.available());
+  is_double_handed = Serial.read();
+  // is_double_handed = false;
   readCommands(right_hand);
+
+  if (is_double_handed){
+    readCommands(left_hand);
+  }
 
   // Initialize hands
   float maxSpeed = 4000.0, acc = 10000.0;
   right_hand.setFingers(right_solenoid_pins, right_servo_pins);
+  right_hand.setEquilibriumAngles(right_equilibrium_angles);
+  right_hand.getFingersInNormalPosition();
   right_hand.setLimitSwitch(right_button_pin);
   right_hand.setMotorParams(acc, maxSpeed);
+  right_hand.setTimePerBeat(time_per_beat);
+  right_hand.setHandedness('r');
+  right_hand.setTheOtherHand(left_hand);
 
   left_hand.setFingers(left_solenoid_pins, left_servo_pins);
+  left_hand.setEquilibriumAngles(left_equilibrium_angles);
+  left_hand.getFingersInNormalPosition();
   left_hand.setLimitSwitch(left_button_pin);
   left_hand.setMotorParams(acc, maxSpeed);
+  left_hand.setTimePerBeat(time_per_beat);
+  left_hand.setHandedness('l');
+  left_hand.setTheOtherHand(right_hand);
   
   homing();
 
@@ -67,21 +89,36 @@ void setup() {
 
 void loop() {
 
-  State leftState  = left_hand.getState();
-  State rightState = right_hand.getState();
+  if (is_double_handed){
+    unsigned long reference_time=millis();
+    right_hand.update(reference_time);
+    left_hand.update(reference_time);
+  }
 
-  if (rightState == State::READY_TO_PLAY &&
-      (leftState == State::READY_TO_PLAY || leftState == State::PLAYING)) {
+  else{
+    if(right_hand.getState() == State::READY_TO_PLAY){
       right_hand.setState(State::PRESSING);
+    }
+    right_hand.update();
   }
 
-  if (leftState == State::READY_TO_PLAY &&
-      (rightState == State::READY_TO_PLAY || rightState == State::PLAYING)) {
-      left_hand.setState(State::PRESSING);
+
+  if (right_hand.getState() == State::FINISHED && left_hand.getState() == State::FINISHED){
+    right_hand.command_index = 0;
+    left_hand.command_index = 0;
+    right_hand.setState(State::IDLE);
+    left_hand.setState(State::IDLE);
+    right_hand.resetCompensation();
+    left_hand.resetCompensation();
+    delay(2000);
+  }
+  else if(right_hand.getState() == State::FINISHED){
+    right_hand.command_index = 0;
+    right_hand.setState(State::IDLE);
+    right_hand.resetCompensation();
+    delay(2000);
   }
 
-  right_hand.update();
-  left_hand.update();
 }
 
 
@@ -128,15 +165,13 @@ void readCommands(Hand &hand){
     counter++;
   }
 
-  // Exit if no data is available
-  if (counter > timeoutIterations){
-    return;  // It may happen that left_hand has no commands (for songs played with only one hand); return if waiting is too long
-  }
+  // // Exit if no data is available
+  // if (counter > timeoutIterations){
+  //   return;  // It may happen that left_hand has no commands (for songs played with only one hand); return if waiting is too long
+  // }
   
   // Read the length of hand commands
-  for (int i = 0; i < 4; i++) {
-    hand.command_list_length = (hand.command_list_length << one_byte) | Serial.read();  
-  }
+  hand.command_list_length = read_int_from_serial();
 
   hand.commands = new Hand::CommandStruct[hand.command_list_length];
 
@@ -144,6 +179,18 @@ void readCommands(Hand &hand){
   for (int i = 0; i < hand.command_list_length; i++){
     readCommandStruct(hand.commands[i]);
   }
+}
+
+
+int read_int_from_serial(){
+  while(Serial.available() <= 4);
+  byte one_byte = 8;
+  int result = 0;
+  for (int i = 0; i < 4; i++) {
+    result = (result << one_byte) | Serial.read();  
+  }
+
+  return result;
 }
 
 
