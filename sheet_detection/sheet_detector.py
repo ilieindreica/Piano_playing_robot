@@ -4,20 +4,11 @@ import cv2
 import numpy as np
 import bisect
 import torch
-from itertools import groupby
+from Notes import NoteOrRest, NoteWithPosition
+from ultralytics import YOLO
 
 
 PitchInfo = namedtuple("PitchInfo", ["pitch_value", "pitch_name"])
-
-
-class NoteOrRest:
-    def __init__(self, pitch=None, duration=0.0):
-        # Use a list for pitch so that chords (multiple pitches) can be stored
-        self.pitch = pitch if pitch is not None else []
-        self.duration = duration
-
-    def __repr__(self):
-        return f"(pitch={self.pitch}, duration={self.duration})"
 
 
 class Staff:
@@ -149,8 +140,13 @@ class Staff:
         else:
             final_bars_x_coords = []
 
-        self.barlines_x_coord = final_bars_x_coords
-        self.barlines_x_coord.sort()
+        # If there are no barlines detected, consider one as being the end of the image,
+        # otherwise everything will get lost in assign_into_measures
+        if not final_bars_x_coords:
+            self.barlines_x_coord = [self.crop_original.size]
+        else:
+            self.barlines_x_coord = final_bars_x_coords
+            self.barlines_x_coord.sort()
 
     def assign_into_measures(self):
         """
@@ -282,6 +278,8 @@ class Staff:
         return PitchInfo(pitch_value=pitch, pitch_name=pitch_name)
 
     def assign_line_intervals(self, line_beginnings, line_endings):
+        # The lines by which the pitch is detected; any notehead center that falls between
+        # two lines, is of that pitch
         tol = 1
         line_beginnings = [max(line - self.window_y1 - tol, 0) for line in line_beginnings]
         line_endings = [max(line - self.window_y1 + tol, 0) for line in line_endings]
@@ -353,7 +351,7 @@ class MusicSheet:
         self.model_note = None
         self.slw_tolerance = 4
         self.is_double_handed = True  # True if it contains bass-clef, False if only treble-clef
-        self.time_series = []
+        self.time_series = {}
         self.main_octave = 4
         self.nr_white_keys_in_octave = 7
         if image is None:
@@ -369,14 +367,16 @@ class MusicSheet:
         self.folder_path = folder_path
         self.image_path = image_path
 
-    def set_image(self, image):
-        self.height = image.shape[0]
-        self.width = image.shape[1]
-        self.original_image = image
+    def set_image(self, image_path):
+        """Takes the image path."""
+        self.original_image = cv2.imread(image_path)
+        self.height = self.original_image.shape[0]
+        self.width = self.original_image.shape[1]
         self.binary_image = binarize_image(self.original_image, 210, True, True)
 
-    def set_model_note(self, model):
-        self.model_note = model
+    def set_model_note(self, model_path):
+        """Receives the path for the model and sets it."""
+        self.model_note = YOLO(model_path)
 
     def resize_image(self, height):
         self.height = height
@@ -429,6 +429,7 @@ class MusicSheet:
         consecutives = 1
         beginning_of_staff = line_beginnings[0]
         start_idx = 0
+
         for j in range(1, len(line_beginnings)):
             staff = Staff(music_sheet_parent=self)
             start_of_line = line_beginnings[j]
@@ -442,11 +443,19 @@ class MusicSheet:
                 staff.y1 = beginning_of_staff
                 # staff.y2 = start_of_line + self.staffline_width  # Add line_width to match the end of staff
                 staff.y2 = line_endings[j]
-                staff.window_pad = ((space_between_line_beginnings - self.slw_tolerance)
-                                    * staff.nr_of_lines_above_or_below)
-                staff.assign_line_intervals(line_beginnings[start_idx:j+1], line_endings[start_idx:j+1])
+                # Compute the max window_pad that keeps the crop within bounds
+                max_pad_above = staff.y1
+                max_pad_below = self.height - staff.y2
+                staff.window_pad = min((space_between_line_beginnings - self.slw_tolerance)
+                                       * staff.nr_of_lines_above_or_below,
+                                       max_pad_above, max_pad_below)
+
+                staff.assign_line_intervals(line_beginnings[start_idx:j + 1], line_endings[start_idx:j + 1])
+                crop_limit_above = staff.y1 - staff.window_pad
+                crop_limit_below = staff.y2 + staff.window_pad
+
                 staff.set_crop(
-                    self.original_image[staff.y1 - staff.window_pad:staff.y2 + staff.window_pad, 0:self.width])
+                    self.original_image[crop_limit_above:crop_limit_below, 0:self.width])
                 self.all_staves.append(staff)
                 beginning_of_staff = start_of_line
                 start_idx = j
@@ -504,26 +513,28 @@ class MusicSheet:
             for measure in staff.measures:
                 for note in measure:
                     time_ref = treble_time if staff.clef == 'Treble-clef' else bass_time
+                    hand = 'right' if staff.clef == 'Treble-clef' else 'left'
                     # the value for treble octave is chosen in order to accommodate for main_octave selected afterward
                     octave_offset = -1 if staff.clef == 'Treble-clef' else -2  # Bass is one octave lower
 
                     for pitch in note.pitch:
-                        piano_key_code = (self.nr_white_keys_in_octave * octave_offset + pitch
-                                          if pitch != "REST" else "REST")
-                        self.time_series.append((time_ref, piano_key_code, note.duration))
+                        piano_key_code = (self.nr_white_keys_in_octave * octave_offset + pitch if
+                                          pitch != 'REST' else 'REST')
+                        self.time_series.setdefault(time_ref, {'left': [], 'right': []})[hand].append(
+                            NoteWithPosition(piano_key_code, note.duration)
+                        )
 
                     if staff.clef == 'Treble-clef':
                         treble_time += note.duration
                     else:
                         bass_time += note.duration
 
-        self.time_series.sort(key=lambda x: x[0])
-        self.time_series = groupby(self.time_series, key=lambda x: x[0])
+        # self.time_series.sort(key=lambda x: x[0])
+        # self.time_series = groupby(self.time_series, key=lambda x: x[0])
 
     def run_detection(self):
         """Calls every method needed to detect anything necessary. At the end, computes the time series."""
         self.detect_staves()
-
         for staff in self.all_staves:
             staff.detect_with_yolo()
             staff.detect_clef()
@@ -550,15 +561,14 @@ class MusicSheet:
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
-    def show_results(self, show_noteheads_contours=True, show_bounding_boxes=True,
-                     show_barlines=True, show_noteheads_centroids=False, show_class_label=False):
-
+    def get_results_image(self, show_noteheads_contours=True, show_bounding_boxes=True,
+                     show_barlines=True, show_noteheads_centroids=False, show_class_label=False, height=550):
         image = np.copy(self.original_image)
 
         for staff in self.all_staves:
             if show_barlines:
                 for x in staff.barlines_x_coord:
-                    cv2.line(image, (x, staff.y1), (x, staff.y2), (0, 0, 255), 2)
+                    cv2.line(image, (x, staff.y1), (x, staff.y2), (0, 0, 255), 3)
             if show_noteheads_contours:
                 # Contours in staff are with coordinates relative to the crop, translate them relative to original image
                 offset = np.array([0, staff.y1 - staff.window_pad])
@@ -569,16 +579,24 @@ class MusicSheet:
                 for box in staff.detections.boxes:
                     cls_idx = box.cls.item()
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    cv2.rectangle(image, (x1, y1 + offset), (x2, y2 + offset), (255, 255, 0), 2)
+                    cv2.rectangle(image, (x1, y1 + offset), (x2, y2 + offset), (255, 200, 0), 2)
 
                     if show_class_label:
                         cv2.putText(image, str(int(cls_idx)), (x1, y1 - 5 + offset), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.5, (200, 200, 0), 1, lineType=cv2.LINE_AA)
+                                    0.6, (255, 0, 0), 1, lineType=cv2.LINE_AA)
             if show_noteheads_centroids:
                 offset = staff.y1 - staff.window_pad
                 for c in staff.noteheads_centroids:
                     image = cv2.circle(image, (int(c[0]), int(c[1]) + offset), 2, (0, 255, 255), thickness=-1)
-        image, _ = resize_with_aspect_ratio(image, 550)
+        image, _ = resize_with_aspect_ratio(image, height)
+
+        return image
+
+    def show_results(self, show_noteheads_contours=True, show_bounding_boxes=True,
+                     show_barlines=True, show_noteheads_centroids=False, show_class_label=False):
+
+        image = self.get_results_image(show_noteheads_contours, show_bounding_boxes, show_barlines,
+                                       show_noteheads_centroids, show_class_label)
         cv2.imshow('img', image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
