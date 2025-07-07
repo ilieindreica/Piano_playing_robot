@@ -34,8 +34,7 @@ using State = Hand::State;
 /* ***************** */
 
 /* Global variables */
-int tempo;
-float time_per_beat = 0;
+int whole_note_duration = 0;
 bool is_double_handed = true;
 /* **************** */
 
@@ -51,8 +50,7 @@ void setup() {
   Serial.println("Arduino Ready!");
 
   // READ DATA from Serial
-  tempo = read_int_from_serial();
-  time_per_beat = 60000 / tempo;
+  whole_note_duration = read_int_from_serial();
   while(!Serial.available());
   is_double_handed = Serial.read();
   // is_double_handed = false;
@@ -69,7 +67,7 @@ void setup() {
   right_hand.getFingersInNormalPosition();
   right_hand.setLimitSwitch(right_button_pin);
   right_hand.setMotorParams(acc, maxSpeed);
-  right_hand.setTimePerBeat(time_per_beat);
+  right_hand.setTimePerBeat(whole_note_duration);
   right_hand.setHandedness('r');
   right_hand.setTheOtherHand(left_hand);
 
@@ -78,7 +76,7 @@ void setup() {
   left_hand.getFingersInNormalPosition();
   left_hand.setLimitSwitch(left_button_pin);
   left_hand.setMotorParams(acc, maxSpeed);
-  left_hand.setTimePerBeat(time_per_beat);
+  left_hand.setTimePerBeat(whole_note_duration);
   left_hand.setHandedness('l');
   left_hand.setTheOtherHand(right_hand);
   

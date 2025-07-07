@@ -11,7 +11,7 @@ class Finger{
     int servo_pin;
     int angle;
     unsigned long startTime, waitingStart;
-    bool front_on, back_on, waiting_on;
+    bool front_on, waiting_on;
     float duration;
     int waiting_offset;   // front_solenoid needs an offset from back_solenoid in activation, otherwise it could jam in the keys
     Servo servo;
@@ -27,7 +27,7 @@ class Finger{
     void setEquilibriumAngle(int angle);
     int getEquilibriumAngle();
     void press_white_key(int duration, byte state=HIGH, unsigned long reference_time=millis());
-    void press_black_key(int duration);
+    void extend();
     bool canRotate(int newAngle);
     void rotate(int newAngle, bool bypass_constraint=false);
     void increaseDuration(float increase);

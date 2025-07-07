@@ -16,7 +16,6 @@ void Finger::setFinger(int front_solenoid_pin, int back_solenoid_pin, int servo_
   pinMode(this->servo_pin, OUTPUT);
 
   front_on = false;
-  back_on = false;
   waiting_on = false;
   isPlaying = false;
 
@@ -59,11 +58,7 @@ void Finger::press_white_key(int duration, byte state=HIGH, unsigned long refere
   }
 }
 
-void Finger::press_black_key(int duration){
-  this->duration = duration;
-  back_on = true;
-  waitingStart = millis();
-  waiting_on = true;
+void Finger::extend(){
   digitalWrite(back_solenoid_pin, HIGH);
 }
 

@@ -18,6 +18,9 @@ Hand::Hand(int interface, int step, int dir, int *solenoid_pins, int *servo_pins
   commands = nullptr;
   command_list_length = 0;
   compensation = 0;
+  for (int i = 0; i < NUM_OF_FINGERS; i++) {
+    previous_angles[i] = 0;
+  }
   setFingers(solenoid_pins, servo_pins);
 }
 
@@ -200,7 +203,6 @@ void Hand::resetCompensation(){
   compensation = 0;
 }
 
-
 // Update function; needs to be called in a loop; Updates the hand state and ensures correct duration of notes without blocking
 void Hand::update(unsigned long reference_time=millis()) {
   // Serial.print("STATE: "); Serial.print(static_cast<int>(current_state)); Serial.println(stateToStr(current_state));
@@ -224,17 +226,41 @@ void Hand::update(unsigned long reference_time=millis()) {
     case State::CHANGING_POSTURE:{
       /// add rotation
       unsigned long compensation_start = millis();
+      bool needs_waiting = false;
       for (int i = 0; i < NUM_OF_FINGERS; i++){
-        rotateFingerToKey(i, decoded_command.angles[i]);
+        int angle = decoded_command.angles[i];
+
+        if (angle != previous_angles[i]){
+          rotateFingerToKey(i, angle);
+          needs_waiting = true;
+          previous_angles[i] = angle;
+        }
+       
+
+        /// extension
+        // if(decoded_command.back_solenoids_states[i] == 1){
+        //   fingers[i].extend();
+        //   needs_waiting = true;
+        // }
       }
-      delay(10);
-      
-      /// add extension
+
+      waiting_start = millis();
+      if(needs_waiting){
+        // Wait only if fingers need to rotate
+        // waiting_time = 60;
+        delay(70);
+      }
+      else{
+        waiting_time = 0;
+      }
 
       moveToKey(decoded_command.position);
 
       unsigned long compensation_end = millis();
-      compensation += compensation_end - compensation_start;
+      compensation += compensation_end - compensation_start + waiting_time;
+
+      // current_state = State::WAITING;
+      // state_after_waiting = State::READY_TO_PLAY;
       current_state = State::READY_TO_PLAY;
       break;
     }
@@ -252,10 +278,10 @@ void Hand::update(unsigned long reference_time=millis()) {
 
     // PRESSING
     case State::PRESSING:{
-      Serial.print(command_index); Serial.print(" "); Serial.print(handedness_character); Serial.println(millis());
-      if (handedness_character == 'l'){
-        Serial.println();
-      }
+      // Serial.print(command_index); Serial.print(" "); Serial.print(handedness_character); Serial.println(millis());
+      // if (handedness_character == 'l'){
+      //   Serial.println();
+      // }
 
       for (int i = 0; i < NUM_OF_FINGERS; i++){
         fingers[i].press_white_key(decoded_command.durations[i], decoded_command.front_solenoids_states[i]);
@@ -326,7 +352,8 @@ void Hand::demo() {
     previousMillis = currentMillis;
     
     if (!pressBlack){
-      fingers[currentFinger].press_black_key(interval);
+      fingers[currentFinger].extend();
+      delay(20);
     }
     else{
       fingers[currentFinger].press_white_key(interval); 

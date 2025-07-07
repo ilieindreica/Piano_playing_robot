@@ -19,8 +19,8 @@
 #define STEPS_PER_REVOLUTION 200
 #define DISTANCE_BETWEEN_KEYS 23  // mm
 #define ONE_KEY_STEP (STEPS_PER_REVOLUTION * DISTANCE_BETWEEN_KEYS / (NUM_OF_TEETH * TEETH_STEP))
-#define ONE_KEY_ROTATION 10  // num of degrees to rotate one key to the left or to the right
-#define LIMIT_ANGLE_DEVIATION 15
+#define ONE_KEY_ROTATION 15  // num of degrees to rotate one key to the left or to the right
+#define LIMIT_ANGLE_DEVIATION 35
 #define LIMIT_OVERLAP_ANGLE 5
 
 
@@ -35,7 +35,7 @@
 #define START_POS_RIGHT_HAND (((2 * MAIN_OCTAVE - 1) * NUM_OF_WHITE_KEYS_IN_OCTAVE + 1) / 2)
 #define START_POS_LEFT_HAND (START_POS_RIGHT_HAND - NUM_OF_WHITE_KEYS_IN_OCTAVE)
 
-#define SAFETY_DISTANCE_BETWEEN_HANDS (int(SPAN_OF_HAND / 2))  // Calculated between the centers of hands
+#define SAFETY_DISTANCE_BETWEEN_HANDS (SPAN_OF_HAND) // Calculated between the centers of hands
 #define MAX_HAND_CENTER_POSITION (NUM_OF_WHITE_KEYS - (int)(NUM_OF_FINGERS/2))
 #define MIN_HAND_CENTER_POSITION ((int)((NUM_OF_FINGERS + 1) / 2))
 #define MAX_STEPPER_TRAVEL_DISTANCE (MAX_HAND_CENTER_POSITION * ONE_KEY_STEP)

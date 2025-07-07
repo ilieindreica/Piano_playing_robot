@@ -96,6 +96,7 @@ class Hand{
     float compensation = 0;
     float time_per_beat = 0;
     char handedness_character;
+    int previous_angles[NUM_OF_FINGERS];
   
 };
 
