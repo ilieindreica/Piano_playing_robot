@@ -2,6 +2,7 @@ import re
 import numpy as np
 import math
 from scipy.optimize import linear_sum_assignment
+from tkinter import messagebox
 
 from sheet_detection.Notes import NoteWithPosition
 
@@ -32,7 +33,6 @@ config = {
     'POS_AND_ANGLE_COMMAND_BIT_LENGTH': 0,
     'SOLENOIDS_AND_DURATION_COMMAND_BIT_LENGTH': 0
 }
-
 
 # Scores for each finger
 FINGER_SCORES = [10, 10, 10, 10, 10]
@@ -105,8 +105,14 @@ class Hand:
     def update_finger_positions(self):
         pos = self.leftmost_pos
         for finger in self.fingers:
-            finger.position = pos
+            finger.position = pos - int(finger.angle)
             pos += 1
+
+    def reset_durations_and_activations(self):
+        for finger in self.fingers:
+            finger.duration = 0
+            finger.press_black_key = False
+            finger.available = True
 
     def calculate_finger_states(self, notes_pos, notes_duration):
         notes_pos = [pos for pos in notes_pos if pos != 'REST']
@@ -124,6 +130,7 @@ class Hand:
             for j, finger in enumerate(self.fingers):
                 cost_matrix[i][j] = finger.position - note_pos
 
+        print([f.position for f in self.fingers])
         # Solve optimal assignment problem (a modified Jonker-Volgenant algorithm with no initialization)
         note_indices, finger_indices = linear_sum_assignment(np.abs(cost_matrix))  # Minimize absolute cost
 
@@ -132,7 +139,7 @@ class Hand:
             if notes_pos[note_idx] % 1 != 0:
                 self.fingers[finger_idx].press_black_key = True
             self.fingers[finger_idx].available = False
-            self.fingers[finger_idx].angle = cost_matrix[note_idx][finger_idx]
+            self.fingers[finger_idx].angle += cost_matrix[note_idx][finger_idx]
             self.fingers[finger_idx].duration = notes_duration[note_idx]
 
         # print([f.get_finger_state() for f in self.fingers])
@@ -191,9 +198,9 @@ def group_notes_by_span(sequence, span):
     mean_pos_sequence = []
     cluster = []
 
-    for notes in sequence:
+    for notes_at_k in sequence:
         # Filter out 'REST' values before finding min/max positions
-        valid_notes = [note for note in notes if note.pos != 'REST']
+        valid_notes = [note for note in notes_at_k if note.pos != 'REST']
 
         if valid_notes:
             # Get the extreme positions at the current time step
@@ -205,7 +212,7 @@ def group_notes_by_span(sequence, span):
             if max(max_pos, max_pos_at_time_k) - min(min_pos, min_pos_at_time_k) + 1 <= span:
                 max_pos = max(max_pos, max_pos_at_time_k)
                 min_pos = min(min_pos, min_pos_at_time_k)
-                cluster.append(notes)
+                cluster.append(notes_at_k)
             # If not, begin a new cluster
             else:
                 if cluster:
@@ -214,10 +221,10 @@ def group_notes_by_span(sequence, span):
                     mean_pos_sequence.extend([mean_pos] * len(cluster))
                 max_pos = max_pos_at_time_k
                 min_pos = min_pos_at_time_k
-                cluster = [notes]
+                cluster = [notes_at_k]
         else:
             # If all notes in this time step are REST, or an empty list, just add them to the cluster
-            cluster.append(notes)
+            cluster.append(notes_at_k)
 
     if cluster:
         groups.append(cluster)
@@ -259,15 +266,17 @@ def find_sublist_idx(lists, idx):
 def get_finger_pos_series(hand_positions, notes):
     """Generates a series with finger postures.\n"""
     finger_pos_series = []
+    hand = Hand()
     for i, (pos_at_k, notes_at_k) in enumerate(zip(hand_positions, notes)):
         # The if is to eliminate empty lists; They were needed for collision checking,
         # but in Arduino may worsen things
         if notes_at_k:
-            hand = Hand()
+            hand.reset_durations_and_activations()
             hand.set_position_by_center(pos_at_k)
             notes_pos_at_k = [n.pos for n in notes_at_k]
             notes_duration_at_k = [n.duration for n in notes_at_k]
-            finger_pos_series.append(hand.calculate_finger_states(notes_pos_at_k, notes_duration_at_k))
+            finger_states = hand.calculate_finger_states(notes_pos_at_k, notes_duration_at_k)
+            finger_pos_series.append(finger_states)
 
     return finger_pos_series
 
@@ -294,8 +303,8 @@ def schedule_actions(time_series, adjust_for_octave=True, is_double_handed=True)
         # (avoiding discrepancies due to varying note durations) and ensure synchronization across time beats.
         # It simplifies collision checking and allows for easier tracking of both hands'
         # positions at each specific time/beat.
-        left_notes.append(hands['left'])
         right_notes.append(hands['right'])
+        left_notes.append(hands['left'])
 
     right_groups, right_hand_positions = group_notes_by_span(right_notes, span)
     left_groups, left_hand_positions = group_notes_by_span(left_notes, span)
@@ -304,10 +313,13 @@ def schedule_actions(time_series, adjust_for_octave=True, is_double_handed=True)
     # It assumes left_ and right_ have the same number of elements, for a direct correlation
     try:
         if is_double_handed:
+            failed_safety_indices = []
             for i, (l_pos, r_pos) in enumerate(zip(left_hand_positions, right_hand_positions)):
-                difference = safety_distance - (r_pos - l_pos)  # Amount by which hands are too close
+                difference = (r_pos - l_pos)  # Distance between hands
 
-                if difference > 0:  # Collision detected
+                if difference < safety_distance:  # Collision detected
+                    difference = safety_distance - difference  # How much it has to move to ensure safety
+
                     _, left_max = find_sublist_idx(left_groups, i)
                     # Distance from the rightmost reachable position of the left_hand from current position and the
                     # rightmost note at current time. This distance gives the room for adjusting for safety distance
@@ -328,10 +340,14 @@ def schedule_actions(time_series, adjust_for_octave=True, is_double_handed=True)
                         # Move as much as possible, but not enough to fix the issue
                         l_pos -= left_wiggle
                         r_pos += right_wiggle
-                        print(f"Warning: Could not maintain safety distance at index {i}")
+                        failed_safety_indices.append(i)
 
                     right_hand_positions[i] = r_pos
                     left_hand_positions[i] = l_pos
+
+            if failed_safety_indices:
+                messagebox.showwarning(f"Warning",
+                                       f"Could not maintain safety distance at index {failed_safety_indices}")
     except Exception as e:
         print(f'Exceptie: {e}')
 
@@ -340,6 +356,12 @@ def schedule_actions(time_series, adjust_for_octave=True, is_double_handed=True)
 
     right_actions = list(zip(right_hand_positions, right_finger_states))
     left_actions = list(zip(left_hand_positions, left_finger_states))
+
+    # for com in left_actions:
+    #     print(com)
+    # print()
+    # for com in right_actions:
+    #     print(com)
 
     return left_actions, right_actions
 
@@ -374,7 +396,7 @@ def encode_actions(actions):
             shift -= 1
             # To be better transmitted (int instead of float), encode duration as its inverse
             if duration != 0:
-                duration = int(1/duration)
+                duration = int(1 / duration)
             if shift - duration <= 0:
                 command |= duration << (shift - duration_bit_length)
                 shift -= duration_bit_length
@@ -391,8 +413,20 @@ def rearrange_actions(actions):
     rearranged_actions = []
     for pos, fingers in actions:
         rotations, back, front, duration = zip(
-            *[(int(r*2), b, f, int(1 / d) if d != 0 else 0) for b, f, r, d in fingers])
+            *[(int(r * 2), b, f, int(1 / d) if d != 0 else 0) for b, f, r, d in fingers])
         rearranged_actions.append((int(pos * 2), list(rotations), list(back), list(front), list(duration)))
+
+    # # Only update the rotation when a new press requires it, to avoid unnecessary resets to a default state
+    # # between notes, as maybe the same rotation will be needed again right after
+    # DOESNT QUITE WORK because some fingers from the middle may get stuck in a rotational position and interfere with neighbours
+    # for idx in range(1, len(rearranged_actions)):
+    #     _, curr_rot, _, curr_front, _ = rearranged_actions[idx]
+    #     _, prev_rot, _, _, _ = rearranged_actions[idx - 1]
+    #
+    #     for i, f in enumerate(curr_front):
+    #         if f == 0:
+    #             curr_rot[i] = prev_rot[i]
+
     return rearranged_actions
 
 
@@ -403,156 +437,314 @@ def get_action_commands(time_series, is_double_handed=True):
     left_actions = rearrange_actions(left_actions)
     right_actions = rearrange_actions(right_actions)
 
+    # for com in left_actions:
+    #     print(com)
+    # print()
+    # for com in right_actions:
+    #     print(com)
     return left_actions, right_actions
 
 
-
-
-
+lp = {0: {'left': [NoteWithPosition(position='REST', duration=0.25)],
+          'right': [NoteWithPosition(position=-5, duration=0.25)]},
+      0.25: {'left': [NoteWithPosition(position=-10, duration=1), NoteWithPosition(position=-8, duration=1),
+                      NoteWithPosition(position=-12, duration=1)],
+             'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
+      0.5: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
+      0.75: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
+      1.0: {'left': [], 'right': [NoteWithPosition(position=-4, duration=0.125)]},
+      1.125: {'left': [], 'right': [NoteWithPosition(position=-5, duration=0.125)]},
+      1.25: {'left': [NoteWithPosition(position=-8, duration=1), NoteWithPosition(position=-12, duration=1)],
+             'right': [NoteWithPosition(position=-1, duration=0.5)]},
+      1.75: {'left': [],
+             'right': [NoteWithPosition(position=-1, duration=0.125), NoteWithPosition(position=5, duration=0.125)]},
+      1.875: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
+      2.0: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
+      2.25: {'left': [NoteWithPosition(position=-10, duration=1), NoteWithPosition(position=-12, duration=1)],
+             'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
+      2.5: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
+      2.75: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
+      3.0: {'left': [], 'right': [NoteWithPosition(position=-4, duration=0.125)]},
+      3.125: {'left': [], 'right': [NoteWithPosition(position=-5, duration=0.125)]},
+      3.25: {'left': [NoteWithPosition(position=-4, duration=1), NoteWithPosition(position=-12, duration=1)],
+             'right': [NoteWithPosition(position=-1, duration=0.5)]},
+      3.75: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
+      3.875: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
+      4.0: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
+      4.25: {'left': [NoteWithPosition(position=-12, duration=0.5)],
+             'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
+      4.5: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
+      4.625: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
+      4.75: {'left': [NoteWithPosition(position=-6, duration=0.25)],
+             'right': [NoteWithPosition(position=-2, duration=0.25)]},
+      5.0: {'left': [NoteWithPosition(position=-7.5, duration=0.25)],
+            'right': [NoteWithPosition(position=-3, duration=0.25)]},
+      5.25: {'left': [NoteWithPosition(position=-10, duration=0.5)],
+             'right': [NoteWithPosition(position=-4, duration=0.5)]},
+      5.75: {'left': [NoteWithPosition(position='REST', duration=0.25)],
+             'right': [NoteWithPosition(position='REST', duration=0.25)]},
+      6.0: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+            'right': [NoteWithPosition(position=-5, duration=0.25)]}}
 
 la_primavera = {0: {'left': [NoteWithPosition(position='REST', duration=0.25)],
-             'right': [NoteWithPosition(position=-5, duration=0.25)]}, 0.25: {
-            'left': [NoteWithPosition(position=-10, duration=1), NoteWithPosition(position=-8, duration=1),
-                     NoteWithPosition(position=-12, duration=1)],
-            'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
-         0.5: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-         0.75: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-         1.0: {'left': [], 'right': [NoteWithPosition(position=-4, duration=0.125)]},
-         1.125: {'left': [], 'right': [NoteWithPosition(position=-5, duration=0.125)]},
-         1.25: {'left': [NoteWithPosition(position=-8, duration=1), NoteWithPosition(position=-12, duration=1)],
-                'right': [NoteWithPosition(position=-1, duration=0.5)]}, 1.75: {'left': [], 'right': [
-            NoteWithPosition(position=5, duration=0.125), NoteWithPosition(position=-1, duration=0.125)]},
-         1.875: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
-         2.0: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
-         2.25: {'left': [NoteWithPosition(position=-10, duration=1), NoteWithPosition(position=-12, duration=1)],
-                'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
-         2.5: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-         2.75: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-         3.0: {'left': [], 'right': [NoteWithPosition(position=-4, duration=0.125)]},
-         3.125: {'left': [], 'right': [NoteWithPosition(position=-5, duration=0.125)]},
-         3.25: {'left': [NoteWithPosition(position=-8, duration=1), NoteWithPosition(position=-12, duration=1)],
-                'right': [NoteWithPosition(position=-1, duration=0.5)]},
-         3.75: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
-         3.875: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
-         4.0: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
-         4.25: {'left': [NoteWithPosition(position=-12, duration=0.5)],
-                'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
-         4.5: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
-         4.625: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
-         4.75: {'left': [NoteWithPosition(position=-9, duration=0.25)],
-                'right': [NoteWithPosition(position=-2, duration=0.25)]},
-         5.0: {'left': [NoteWithPosition(position=-9.5, duration=0.25)],
-               'right': [NoteWithPosition(position=-3, duration=0.25)]},
-         5.25: {'left': [NoteWithPosition(position=-11, duration=0.5)],
-                'right': [NoteWithPosition(position=-4, duration=0.5)]},
-         5.75: {'left': [NoteWithPosition(position='REST', duration=0.25)],
-                'right': [NoteWithPosition(position='REST', duration=0.25)]},
-         6.0: {'left': [NoteWithPosition(position=-12, duration=0.25)],
-               'right': [NoteWithPosition(position=-5, duration=0.25)]}}
+                    'right': [NoteWithPosition(position=-5, duration=0.25)]}, 0.25: {
+    'left': [NoteWithPosition(position=-10, duration=1), NoteWithPosition(position=-8, duration=1),
+             NoteWithPosition(position=-12, duration=1)],
+    'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
+                0.5: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                0.75: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                1.0: {'left': [], 'right': [NoteWithPosition(position=-4, duration=0.125)]},
+                1.125: {'left': [], 'right': [NoteWithPosition(position=-5, duration=0.125)]},
+                1.25: {'left': [NoteWithPosition(position=-8, duration=1), NoteWithPosition(position=-12, duration=1)],
+                       'right': [NoteWithPosition(position=-1, duration=0.5)]}, 1.75: {'left': [], 'right': [
+        NoteWithPosition(position=5, duration=0.125), NoteWithPosition(position=-1, duration=0.125)]},
+                1.875: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
+                2.0: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
+                2.25: {'left': [NoteWithPosition(position=-10, duration=1), NoteWithPosition(position=-12, duration=1)],
+                       'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
+                2.5: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                2.75: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                3.0: {'left': [], 'right': [NoteWithPosition(position=-4, duration=0.125)]},
+                3.125: {'left': [], 'right': [NoteWithPosition(position=-5, duration=0.125)]},
+                3.25: {'left': [NoteWithPosition(position=-8, duration=1), NoteWithPosition(position=-12, duration=1)],
+                       'right': [NoteWithPosition(position=-1, duration=0.5)]},
+                3.75: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
+                3.875: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
+                4.0: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
+                4.25: {'left': [NoteWithPosition(position=-12, duration=0.5)],
+                       'right': [NoteWithPosition(position=-2.5, duration=0.25)]},
+                4.5: {'left': [], 'right': [NoteWithPosition(position=-2, duration=0.125)]},
+                4.625: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
+                4.75: {'left': [NoteWithPosition(position=-9, duration=0.25)],
+                       'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                5.0: {'left': [NoteWithPosition(position=-9.5, duration=0.25)],
+                      'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                5.25: {'left': [NoteWithPosition(position=-11, duration=0.5)],
+                       'right': [NoteWithPosition(position=-4, duration=0.5)]},
+                5.75: {'left': [NoteWithPosition(position='REST', duration=0.25)],
+                       'right': [NoteWithPosition(position='REST', duration=0.25)]},
+                6.0: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+                      'right': [NoteWithPosition(position=-5, duration=0.25)]}}
 
-twinkle_twinkle = {0: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-6, duration=0.25)]},
-                   0.25: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-6, duration=0.25)]},
-                   0.5: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-2, duration=0.25)]},
-                   0.75: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-2, duration=0.25)]},
-                   1.0: {'left': [NoteWithPosition(position=-10, duration=0.25)], 'right': [NoteWithPosition(position=-1, duration=0.25)]},
-                   1.25: {'left': [NoteWithPosition(position=-10, duration=0.25)], 'right': [NoteWithPosition(position=-1, duration=0.25)]},
-                   1.5: {'left': [NoteWithPosition(position=-11, duration=0.5)], 'right': [NoteWithPosition(position=-2, duration=0.5)]},
-                   2.0: {'left': [NoteWithPosition(position=-12, duration=0.25)], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-                   2.25: {'left': [NoteWithPosition(position=-12, duration=0.25)], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-                   2.5: {'left': [NoteWithPosition(position=-13, duration=0.25)], 'right': [NoteWithPosition(position=-4, duration=0.25)]},
-                   2.75: {'left': [NoteWithPosition(position=-13, duration=0.25)], 'right': [NoteWithPosition(position=-4, duration=0.25)]},
-                   3.0: {'left': [NoteWithPosition(position=-14, duration=0.25)], 'right': [NoteWithPosition(position=-5, duration=0.25)]},
-                   3.25: {'left': [NoteWithPosition(position=-14, duration=0.25)], 'right': [NoteWithPosition(position=-5, duration=0.25)]},
-                   3.5: {'left': [NoteWithPosition(position=-13, duration=0.5)], 'right': [NoteWithPosition(position=-6, duration=0.5)]},
-                   4.0: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-2, duration=0.25)]},
-                   4.25: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-2, duration=0.25)]},
-                   4.5: {'left': [NoteWithPosition(position=-12, duration=0.25)], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-                   4.75: {'left': [NoteWithPosition(position=-12, duration=0.25)], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-                   5.0: {'left': [NoteWithPosition(position=-13, duration=0.25)], 'right': [NoteWithPosition(position=-4, duration=0.25)]},
-                   5.25: {'left': [NoteWithPosition(position=-13, duration=0.25)], 'right': [NoteWithPosition(position=-4, duration=0.25)]},
-                   5.5: {'left': [NoteWithPosition(position=-14, duration=0.5)], 'right': [NoteWithPosition(position=-5, duration=0.5)]},
-                   6.0: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-2, duration=0.25)]},
-                   6.25: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-2, duration=0.25)]},
-                   6.5: {'left': [NoteWithPosition(position=-12, duration=0.25)], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-                   6.75: {'left': [NoteWithPosition(position=-12, duration=0.25)], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-                   7.0: {'left': [NoteWithPosition(position=-13, duration=0.25)], 'right': [NoteWithPosition(position=-4, duration=0.25)]},
-                   7.25: {'left': [NoteWithPosition(position=-13, duration=0.25)], 'right': [NoteWithPosition(position=-4, duration=0.25)]},
-                   7.5: {'left': [NoteWithPosition(position=-16, duration=0.5)], 'right': [NoteWithPosition(position=-5, duration=0.5)]},
-                   8.0: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-7, duration=0.25)]},
-                   8.25: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-6, duration=0.25)]},
-                   8.5: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-2, duration=0.25)]},
-                   8.75: {'left': [NoteWithPosition(position=-11, duration=0.25)], 'right': [NoteWithPosition(position=-2, duration=0.25)]},
-                   9.0: {'left': [NoteWithPosition(position=-10, duration=0.125)], 'right': [NoteWithPosition(position=-1, duration=0.25)]},
-                   9.25: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=-1, duration=0.25)]},
-                   9.5: {'left': [NoteWithPosition(position=-6, duration=0.5)], 'right': [NoteWithPosition(position=-2, duration=0.5)]},
-                   10.0: {'left': [NoteWithPosition(position=-12, duration=0.25)], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-                   10.25: {'left': [NoteWithPosition(position=-8, duration=0.25)], 'right': [NoteWithPosition(position=-3, duration=0.25)]},
-                   10.5: {'left': [NoteWithPosition(position=-9, duration=0.25)], 'right': [NoteWithPosition(position=-4, duration=0.25)]},
-                   10.75: {'left': [NoteWithPosition(position=-13, duration=0.25)], 'right': [NoteWithPosition(position=-4, duration=0.25)]},
-                   11.0: {'left': [NoteWithPosition(position=-9, duration=0.25)], 'right': [NoteWithPosition(position=-5, duration=0.25)]},
-                   11.25: {'left': [NoteWithPosition(position=-16, duration=0.25)], 'right': [NoteWithPosition(position=-5, duration=0.25)]},
-                   11.5: {'left': [NoteWithPosition(position=-13, duration=0.5)], 'right': [NoteWithPosition(position=-6, duration=0.5)]},
+# get_action_commands(la_primavera, is_double_handed=True)
+
+
+twinkle_twinkle = {0: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                       'right': [NoteWithPosition(position=-6, duration=0.25)]},
+                   0.25: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                          'right': [NoteWithPosition(position=-6, duration=0.25)]},
+                   0.5: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                         'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                   0.75: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                          'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                   1.0: {'left': [NoteWithPosition(position=-10, duration=0.25)],
+                         'right': [NoteWithPosition(position=-1, duration=0.25)]},
+                   1.25: {'left': [NoteWithPosition(position=-10, duration=0.25)],
+                          'right': [NoteWithPosition(position=-1, duration=0.25)]},
+                   1.5: {'left': [NoteWithPosition(position=-11, duration=0.5)],
+                         'right': [NoteWithPosition(position=-2, duration=0.5)]},
+                   2.0: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+                         'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                   2.25: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+                          'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                   2.5: {'left': [NoteWithPosition(position=-13, duration=0.25)],
+                         'right': [NoteWithPosition(position=-4, duration=0.25)]},
+                   2.75: {'left': [NoteWithPosition(position=-13, duration=0.25)],
+                          'right': [NoteWithPosition(position=-4, duration=0.25)]},
+                   3.0: {'left': [NoteWithPosition(position=-14, duration=0.25)],
+                         'right': [NoteWithPosition(position=-5, duration=0.25)]},
+                   3.25: {'left': [NoteWithPosition(position=-14, duration=0.25)],
+                          'right': [NoteWithPosition(position=-5, duration=0.25)]},
+                   3.5: {'left': [NoteWithPosition(position=-13, duration=0.5)],
+                         'right': [NoteWithPosition(position=-6, duration=0.5)]},
+                   4.0: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                         'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                   4.25: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                          'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                   4.5: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+                         'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                   4.75: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+                          'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                   5.0: {'left': [NoteWithPosition(position=-13, duration=0.25)],
+                         'right': [NoteWithPosition(position=-4, duration=0.25)]},
+                   5.25: {'left': [NoteWithPosition(position=-13, duration=0.25)],
+                          'right': [NoteWithPosition(position=-4, duration=0.25)]},
+                   5.5: {'left': [NoteWithPosition(position=-14, duration=0.5)],
+                         'right': [NoteWithPosition(position=-5, duration=0.5)]},
+                   6.0: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                         'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                   6.25: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                          'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                   6.5: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+                         'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                   6.75: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+                          'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                   7.0: {'left': [NoteWithPosition(position=-13, duration=0.25)],
+                         'right': [NoteWithPosition(position=-4, duration=0.25)]},
+                   7.25: {'left': [NoteWithPosition(position=-13, duration=0.25)],
+                          'right': [NoteWithPosition(position=-4, duration=0.25)]},
+                   7.5: {'left': [NoteWithPosition(position=-16, duration=0.5)],
+                         'right': [NoteWithPosition(position=-5, duration=0.5)]},
+                   8.0: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                         'right': [NoteWithPosition(position=-7, duration=0.25)]},
+                   8.25: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                          'right': [NoteWithPosition(position=-6, duration=0.25)]},
+                   8.5: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                         'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                   8.75: {'left': [NoteWithPosition(position=-11, duration=0.25)],
+                          'right': [NoteWithPosition(position=-2, duration=0.25)]},
+                   9.0: {'left': [NoteWithPosition(position=-10, duration=0.125)],
+                         'right': [NoteWithPosition(position=-1, duration=0.25)]},
+                   9.25: {'left': [NoteWithPosition(position=-8, duration=0.125)],
+                          'right': [NoteWithPosition(position=-1, duration=0.25)]},
+                   9.5: {'left': [NoteWithPosition(position=-6, duration=0.5)],
+                         'right': [NoteWithPosition(position=-2, duration=0.5)]},
+                   10.0: {'left': [NoteWithPosition(position=-12, duration=0.25)],
+                          'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                   10.25: {'left': [NoteWithPosition(position=-8, duration=0.25)],
+                           'right': [NoteWithPosition(position=-3, duration=0.25)]},
+                   10.5: {'left': [NoteWithPosition(position=-9, duration=0.25)],
+                          'right': [NoteWithPosition(position=-4, duration=0.25)]},
+                   10.75: {'left': [NoteWithPosition(position=-13, duration=0.25)],
+                           'right': [NoteWithPosition(position=-4, duration=0.25)]},
+                   11.0: {'left': [NoteWithPosition(position=-9, duration=0.25)],
+                          'right': [NoteWithPosition(position=-5, duration=0.25)]},
+                   11.25: {'left': [NoteWithPosition(position=-16, duration=0.25)],
+                           'right': [NoteWithPosition(position=-5, duration=0.25)]},
+                   11.5: {'left': [NoteWithPosition(position=-13, duration=0.5)],
+                          'right': [NoteWithPosition(position=-6, duration=0.5)]},
                    9.125: {'left': [NoteWithPosition(position=-9, duration=0.125)], 'right': []},
                    9.375: {'left': [NoteWithPosition(position=-7, duration=0.125)], 'right': []}}
 
-
-swan_lake = {0: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=-2, duration=0.5), NoteWithPosition(position=3, duration=0.5)]},
-             0.5: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
-             0.625: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-5, duration=0.125)], 'right': [NoteWithPosition(position=0, duration=0.125)]},
-             0.75: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-3, duration=0.125)], 'right': [NoteWithPosition(position=1, duration=0.125)]},
-             0.875: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-5, duration=0.125)], 'right': [NoteWithPosition(position=2, duration=0.125)]},
-             1.0: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=1, duration=0.125)]},
-             1.125: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-3, duration=0.125)], 'right': [NoteWithPosition(position=3, duration=0.25)]},
-             1.375: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': [NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=-4, duration=0.125), NoteWithPosition(position=1, duration=0.125)]},
-             1.5: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-10, duration=0.125)], 'right': [NoteWithPosition(position=3, duration=0.25)]},
-             1.75: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
-             1.875: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-6, duration=0.125)], 'right': [NoteWithPosition(position=1, duration=0.125)]},
-             2.0: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-3, duration=0.125)], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
-             2.125: {'left': [NoteWithPosition(position='REST', duration=0.125), NoteWithPosition(position='REST', duration=0.125)], 'right': [NoteWithPosition(position=-3, duration=0.125), NoteWithPosition(position=4, duration=0.125)]},
-             2.25: {'left': [NoteWithPosition(position='REST', duration=0.25)], 'right': [NoteWithPosition(position=1, duration=0.125)]},
-             2.375: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.5), NoteWithPosition(position=4, duration=0.5)]},
-             2.875: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-6, duration=0.125)], 'right': [NoteWithPosition(position=-11, duration=0.125)]},
-             3.0: {'left': [NoteWithPosition(position=-10, duration=0.125)], 'right': [NoteWithPosition(position='REST', duration=0.125)]},
-             3.125: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': [NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=2, duration=0.125)]},
-             3.25: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=1, duration=0.125)]},
-             3.375: {'left': [NoteWithPosition(position=-5, duration=0.125)], 'right': [NoteWithPosition(position=-7, duration=0.125), NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=-4, duration=0.125), NoteWithPosition(position=0, duration=0.125)]},
-             3.5: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-3, duration=0.125)], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
-             0.125: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': []}, 0.25: {'left': [NoteWithPosition(position=-3, duration=0.125)], 'right': []},
-             0.375: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': []}, 1.25: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': []},
-             1.625: {'left': [NoteWithPosition(position='REST', duration=0.125)], 'right': []}, 2.5: {'left': [NoteWithPosition(position=-8.5, duration=0.25)], 'right': []},
-             2.75: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': []},
-             3.625: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-5, duration=0.125)], 'right': []},
-             3.75: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=0, duration=0.5), NoteWithPosition(position=3, duration=0.5)]},
-             4.25: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
-             4.375: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-5, duration=0.125)], 'right': [NoteWithPosition(position=0, duration=0.125)]},
-             4.5: {'left': [NoteWithPosition(position=-6, duration=0.125), NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-3, duration=0.125)], 'right': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-8, duration=0.125)]},
-             4.625: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-5, duration=0.125)], 'right': [NoteWithPosition(position=2, duration=0.125), NoteWithPosition(position=4, duration=0.125)]},
-             4.75: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=3, duration=0.25)]},
-             5.0: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-6, duration=0.125), NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=1, duration=0.125), NoteWithPosition(position=-2, duration=0.125)]},
-             5.125: {'left': [NoteWithPosition(position='REST', duration=0.125)], 'right': [NoteWithPosition(position=3, duration=0.25)]},
-             5.375: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-6, duration=0.125)], 'right': [NoteWithPosition(position=1, duration=0.125), NoteWithPosition(position=-2, duration=0.125)]},
-             5.5: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-6, duration=0.125), NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
-             5.75: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': [NoteWithPosition(position=0, duration=0.25), NoteWithPosition(position=3, duration=0.25)]},
-             6.0: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-4, duration=0.125)], 'right': [NoteWithPosition(position=-1, duration=0.125), NoteWithPosition(position=0, duration=0.125)]},
-             6.125: {'left': [NoteWithPosition(position='REST', duration=0.125)], 'right': [NoteWithPosition(position=1, duration=0.125)]},
-             6.25: {'left': [NoteWithPosition(position='REST', duration=0.25)], 'right': [NoteWithPosition(position=-1, duration=0.125)]},
-             6.375: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.125)]},
-             6.5: {'left': [NoteWithPosition(position=-8.5, duration=0.25)], 'right': [NoteWithPosition(position=1, duration=0.125)]},
-             6.625: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.5)]},
-             7.125: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-6, duration=0.125)], 'right': [NoteWithPosition(position=-11, duration=0.0625), NoteWithPosition(position=-9, duration=0.0625)]},
-             7.1875: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
-             7.4375: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.25)]},
-             7.6875: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.0625)]},
-             7.75: {'left': [NoteWithPosition(position=-9, duration=0.125)], 'right': [NoteWithPosition(position=0, duration=0.25)]},
-             8.0: {'left': [NoteWithPosition(position=-5, duration=0.125)], 'right': [NoteWithPosition(position=1, duration=0.25)]},
-             8.25: {'left': [NoteWithPosition(position=-10, duration=0.125)], 'right': [NoteWithPosition(position=-4, duration=0.25), NoteWithPosition(position=2, duration=0.25)]},
-             8.5: {'left': [NoteWithPosition(position=-13, duration=0.125), NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-12, duration=0.125), NoteWithPosition(position=-5, duration=0.125)], 'right': [NoteWithPosition(position=0, duration=0.125), NoteWithPosition(position=3, duration=0.125)]},
-             8.625: {'left': [NoteWithPosition(position='REST', duration=0.125)], 'right': [NoteWithPosition(position=0, duration=0.125), NoteWithPosition(position=4, duration=0.125)]},
-             3.875: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-6, duration=0.125)], 'right': []}, 4.0: {'left': [NoteWithPosition(position=-6, duration=0.125), NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-3, duration=0.125)], 'right': []}, 4.125: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': []}, 4.875: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-6, duration=0.125)], 'right': []}, 5.25: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': []}, 5.625: {'left': [NoteWithPosition(position='REST', duration=0.125)], 'right': []}, 5.875: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': []}, 6.75: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': []}, 6.875: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-6, duration=0.125)], 'right': []}, 7.0: {'left': [NoteWithPosition(position=-6, duration=0.125), NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-4, duration=0.125)], 'right': []}, 7.25: {'left': [NoteWithPosition(position=-8, duration=0.25)], 'right': []}, 7.5: {'left': [NoteWithPosition(position='REST', duration=0.25)], 'right': []}, 7.875: {'left': [NoteWithPosition(position=-7, duration=0.125)], 'right': []}, 8.125: {'left': [NoteWithPosition(position=-7, duration=0.125)], 'right': []}, 8.375: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-12, duration=0.125), NoteWithPosition(position=-7, duration=0.125)], 'right': []}}
-
+swan_lake = {
+    0: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-8, duration=0.125)],
+        'right': [NoteWithPosition(position=-2, duration=0.5), NoteWithPosition(position=3, duration=0.5)]},
+    0.5: {'left': [NoteWithPosition(position=-8, duration=0.125)],
+          'right': [NoteWithPosition(position=-1, duration=0.125)]},
+    0.625: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-5, duration=0.125)],
+            'right': [NoteWithPosition(position=0, duration=0.125)]},
+    0.75: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-3, duration=0.125)],
+           'right': [NoteWithPosition(position=1, duration=0.125)]},
+    0.875: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-10, duration=0.125),
+                     NoteWithPosition(position=-5, duration=0.125)],
+            'right': [NoteWithPosition(position=2, duration=0.125)]},
+    1.0: {'left': [NoteWithPosition(position=-8, duration=0.125)],
+          'right': [NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=1, duration=0.125)]},
+    1.125: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-3, duration=0.125)],
+            'right': [NoteWithPosition(position=3, duration=0.25)]},
+    1.375: {'left': [NoteWithPosition(position=-6, duration=0.125)],
+            'right': [NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=-4, duration=0.125),
+                      NoteWithPosition(position=1, duration=0.125)]},
+    1.5: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-10, duration=0.125)],
+          'right': [NoteWithPosition(position=3, duration=0.25)]},
+    1.75: {'left': [NoteWithPosition(position=-8, duration=0.125)],
+           'right': [NoteWithPosition(position=-1, duration=0.125)]},
+    1.875: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-6, duration=0.125)],
+            'right': [NoteWithPosition(position=1, duration=0.125)]},
+    2.0: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-3, duration=0.125)],
+          'right': [NoteWithPosition(position=-1, duration=0.125)]},
+    2.125: {
+        'left': [NoteWithPosition(position='REST', duration=0.125), NoteWithPosition(position='REST', duration=0.125)],
+        'right': [NoteWithPosition(position=-3, duration=0.125), NoteWithPosition(position=4, duration=0.125)]},
+    2.25: {'left': [NoteWithPosition(position='REST', duration=0.25)],
+           'right': [NoteWithPosition(position=1, duration=0.125)]},
+    2.375: {'left': [],
+            'right': [NoteWithPosition(position=-1, duration=0.5), NoteWithPosition(position=4, duration=0.5)]},
+    2.875: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-6, duration=0.125)],
+            'right': [NoteWithPosition(position=-11, duration=0.125)]},
+    3.0: {'left': [NoteWithPosition(position=-10, duration=0.125)],
+          'right': [NoteWithPosition(position='REST', duration=0.125)]},
+    3.125: {'left': [NoteWithPosition(position=-6, duration=0.125)],
+            'right': [NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=2, duration=0.125)]},
+    3.25: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-8, duration=0.125)],
+           'right': [NoteWithPosition(position=-2, duration=0.125), NoteWithPosition(position=1, duration=0.125)]},
+    3.375: {'left': [NoteWithPosition(position=-5, duration=0.125)],
+            'right': [NoteWithPosition(position=-7, duration=0.125), NoteWithPosition(position=-2, duration=0.125),
+                      NoteWithPosition(position=-4, duration=0.125), NoteWithPosition(position=0, duration=0.125)]},
+    3.5: {'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-3, duration=0.125)],
+          'right': [NoteWithPosition(position='REST', duration=0.25)]},
+    0.125: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': []},
+    0.25: {'left': [NoteWithPosition(position=-3, duration=0.125)], 'right': []},
+    0.375: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': []},
+    1.25: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': []},
+    1.625: {'left': [NoteWithPosition(position='REST', duration=0.125)], 'right': []},
+    2.5: {'left': [NoteWithPosition(position=-8.5, duration=0.25)], 'right': []},
+    2.75: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': []},
+    3.625: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-10, duration=0.125),
+                     NoteWithPosition(position=-5, duration=0.125)], 'right': []},
+    3.75: {'left': [NoteWithPosition(position=-8, duration=0.125)],
+           'right': [NoteWithPosition(position=0, duration=0.5), NoteWithPosition(position=3, duration=0.5)]},
+    4.25: {'left': [NoteWithPosition(position=-8, duration=0.125)],
+           'right': [NoteWithPosition(position=-1, duration=0.125)]},
+    4.375: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-5, duration=0.125)],
+            'right': [NoteWithPosition(position=0, duration=0.125)]},
+    4.5: {'left': [NoteWithPosition(position=-6, duration=0.125), NoteWithPosition(position=-8, duration=0.125),
+                   NoteWithPosition(position=-3, duration=0.125)],
+          'right': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-8, duration=0.125)]},
+    4.625: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-10, duration=0.125),
+                     NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-5, duration=0.125)],
+            'right': [NoteWithPosition(position=2, duration=0.125), NoteWithPosition(position=4, duration=0.125)]},
+    4.75: {'left': [NoteWithPosition(position=-8, duration=0.125)],
+           'right': [NoteWithPosition(position=3, duration=0.25)]},
+    5.0: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-6, duration=0.125),
+                   NoteWithPosition(position=-8, duration=0.125)],
+          'right': [NoteWithPosition(position=1, duration=0.125), NoteWithPosition(position=-2, duration=0.125)]},
+    5.125: {'left': [NoteWithPosition(position='REST', duration=0.125)],
+            'right': [NoteWithPosition(position=3, duration=0.25)]},
+    5.375: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-10, duration=0.125),
+                     NoteWithPosition(position=-6, duration=0.125)],
+            'right': [NoteWithPosition(position=1, duration=0.125), NoteWithPosition(position=-2, duration=0.125)]},
+    5.5: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-6, duration=0.125),
+                   NoteWithPosition(position=-8, duration=0.125)],
+          'right': [NoteWithPosition(position='REST', duration=0.25)]},
+    5.75: {'left': [NoteWithPosition(position=-8, duration=0.125)],
+           'right': [NoteWithPosition(position=0, duration=0.25), NoteWithPosition(position=3, duration=0.25)]},
+    6.0: {'left': [NoteWithPosition(position=-11, duration=0.125), NoteWithPosition(position=-4, duration=0.125)],
+          'right': [NoteWithPosition(position=-1, duration=0.125), NoteWithPosition(position=0, duration=0.125)]},
+    6.125: {'left': [NoteWithPosition(position='REST', duration=0.125)],
+            'right': [NoteWithPosition(position=1, duration=0.125)]},
+    6.25: {'left': [NoteWithPosition(position='REST', duration=0.25)],
+           'right': [NoteWithPosition(position=-1, duration=0.125)]},
+    6.375: {'left': [], 'right': [NoteWithPosition(position=-3, duration=0.125)]},
+    6.5: {'left': [NoteWithPosition(position=-8.5, duration=0.25)],
+          'right': [NoteWithPosition(position=1, duration=0.125)]},
+    6.625: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.5)]},
+    7.125: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-6, duration=0.125)],
+            'right': [NoteWithPosition(position=-11, duration=0.0625), NoteWithPosition(position=-9, duration=0.0625)]},
+    7.1875: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.25)]},
+    7.4375: {'left': [], 'right': [NoteWithPosition(position=-1, duration=0.25)]},
+    7.6875: {'left': [], 'right': [NoteWithPosition(position='REST', duration=0.0625)]},
+    7.75: {'left': [NoteWithPosition(position=-9, duration=0.125)],
+           'right': [NoteWithPosition(position=0, duration=0.25)]},
+    8.0: {'left': [NoteWithPosition(position=-5, duration=0.125)],
+          'right': [NoteWithPosition(position=1, duration=0.25)]},
+    8.25: {'left': [NoteWithPosition(position=-10, duration=0.125)],
+           'right': [NoteWithPosition(position=-4, duration=0.25), NoteWithPosition(position=2, duration=0.25)]},
+    8.5: {'left': [NoteWithPosition(position=-13, duration=0.125), NoteWithPosition(position=-8, duration=0.125),
+                   NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-12, duration=0.125),
+                   NoteWithPosition(position=-5, duration=0.125)],
+          'right': [NoteWithPosition(position=0, duration=0.125), NoteWithPosition(position=3, duration=0.125)]},
+    8.625: {'left': [NoteWithPosition(position='REST', duration=0.125)],
+            'right': [NoteWithPosition(position=0, duration=0.125), NoteWithPosition(position=4, duration=0.125)]},
+    3.875: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-6, duration=0.125)],
+            'right': []}, 4.0: {
+        'left': [NoteWithPosition(position=-6, duration=0.125), NoteWithPosition(position=-8, duration=0.125),
+                 NoteWithPosition(position=-3, duration=0.125)], 'right': []},
+    4.125: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': []},
+    4.875: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-6, duration=0.125)],
+            'right': []}, 5.25: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': []},
+    5.625: {'left': [NoteWithPosition(position='REST', duration=0.125)], 'right': []},
+    5.875: {'left': [NoteWithPosition(position=-6, duration=0.125)], 'right': []},
+    6.75: {'left': [NoteWithPosition(position=-8, duration=0.125)], 'right': []},
+    6.875: {'left': [NoteWithPosition(position=-8, duration=0.125), NoteWithPosition(position=-6, duration=0.125)],
+            'right': []}, 7.0: {
+        'left': [NoteWithPosition(position=-6, duration=0.125), NoteWithPosition(position=-8, duration=0.125),
+                 NoteWithPosition(position=-4, duration=0.125)], 'right': []},
+    7.25: {'left': [NoteWithPosition(position=-8, duration=0.25)], 'right': []},
+    7.5: {'left': [NoteWithPosition(position='REST', duration=0.25)], 'right': []},
+    7.875: {'left': [NoteWithPosition(position=-7, duration=0.125)], 'right': []},
+    8.125: {'left': [NoteWithPosition(position=-7, duration=0.125)], 'right': []}, 8.375: {
+        'left': [NoteWithPosition(position=-10, duration=0.125), NoteWithPosition(position=-12, duration=0.125),
+                 NoteWithPosition(position=-7, duration=0.125)], 'right': []}}
 
 # get_action_commands(time_series)
-
-
-
-

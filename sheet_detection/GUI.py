@@ -46,8 +46,11 @@ class GUI(QWidget):
         # The pretrained model for notes
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.model_note_path = self.script_dir + '\\best.pt'
-        self.default_image_folder = self.script_dir + '\\sheets'
-        self.default_tempo = 60
+        self.default_media_folder = self.script_dir + '\\sheets'
+        self.default_image_folder = self.default_media_folder + '\\images'
+        self.default_pdf_folder = self.default_media_folder + '\\pdfs'
+        self.default_midi_folder = self.default_media_folder + '\\midi'
+        self.default_tempo = 200
         self.baud_rate = 115200
         # -------------------------------------
 
@@ -66,16 +69,33 @@ class GUI(QWidget):
         # Add image button
         self.add_image_button = QPushButton("Add Image")
         self.add_image_button.clicked.connect(self.process_image)
-        main_layout.addWidget(self.add_image_button, 0, 0, 1, 3)
+        main_layout.addWidget(self.add_image_button, 0, 0, 1, 1)
+
+        # Add PDF button
+        self.add_pdf_button = QPushButton('Add PDF')
+        self.add_pdf_button.clicked.connect(self.add_pdf)
+        main_layout.addWidget(self.add_pdf_button, 0, 1, 1, 1)
+
+        # Add MIDI button
+        self.add_midi_button = QPushButton('Add MIDI')
+        self.add_midi_button.clicked.connect(self.add_midi)
+        main_layout.addWidget(self.add_midi_button, 0, 2, 1, 1)
 
         # Tempo Box
         self.tempo_box = QSpinBox()
         self.tempo_box.setMinimum(1)
-        self.tempo_box.setMaximum(200)
+        self.tempo_box.setMaximum(500)
         self.tempo_box.setValue(self.default_tempo)
-        self.tempo_box.setSingleStep(10)
+        self.tempo_box.setSingleStep(5)
         main_layout.addWidget(QLabel('Tempo'), 1, 0, 1, 1)
         main_layout.addWidget(self.tempo_box, 1, 1, 1, 1)
+
+        # Tempo-note menu
+        self.note_options_dict = {'whole note': 1, 'half-note': 2, 'quarter-note': 4, 'eight-note': 8}
+        self.note_options = QComboBox()
+        self.note_options.addItems(self.note_options_dict.keys())
+        self.note_options.setCurrentIndex(2)
+        main_layout.addWidget(self.note_options, 1, 2, 1, 1)
 
         # COM port selection
         self.port_box = QComboBox()
@@ -115,24 +135,27 @@ class GUI(QWidget):
         self.music_sheet = MusicSheet()
         self.music_sheet.set_model_note(self.model_note_path)
 
-        self.load_image()
-        self.image_label.setText("Processing...")
-        # Refresh the Label
-        self.image_label.repaint()
+        if self.load_image():
+            self.image_label.setText("Processing...")
+            # Refresh the Label
+            self.image_label.repaint()
 
-        self.music_sheet.set_image(self.image_path)
-        # At the moment, there is some fine-tuning that is dependent on this scale
-        self.music_sheet.resize_image(height=900)
+            self.music_sheet.set_image(self.image_path)
+            # At the moment, there is some fine-tuning that works better with this scale
+            self.music_sheet.resize_image(height=900)
 
-        self.music_sheet.run_detection()
-        image = self.music_sheet.get_results_image(show_noteheads_centroids=True,
-                                                   show_bounding_boxes=True,
-                                                   show_noteheads_contours=False,
-                                                   show_barlines=True,
-                                                   height=900)
-        self.display_cv_image(image)
-        self.left_commands, self.right_commands = ActionScheduler.get_action_commands(self.music_sheet.time_series,
-                                                                                      self.music_sheet.is_double_handed)
+            self.music_sheet.run_detection()
+            image = self.music_sheet.get_results_image(show_noteheads_centroids=True,
+                                                       show_bounding_boxes=True,
+                                                       show_noteheads_contours=False,
+                                                       show_barlines=True,
+                                                       show_class_label=False,
+                                                       show_noteheads_pitch=False,
+                                                       height=900)
+            self.display_cv_image(image)
+            self.left_commands, self.right_commands = (ActionScheduler.get_action_commands
+                                                       (self.music_sheet.time_series,
+                                                        self.music_sheet.is_double_handed))
 
     def send_commands(self):
         max_len = max(len(self.left_commands), len(self.right_commands))
@@ -140,6 +163,7 @@ class GUI(QWidget):
             com1 = self.left_commands[i] if i < len(self.left_commands) else None
             com2 = self.right_commands[i] if i < len(self.right_commands) else None
             print(f'{com1}      {com2}')
+
         if self.right_commands:
             try:
                 selected_port = self.port_box.currentText()
@@ -148,8 +172,13 @@ class GUI(QWidget):
                 self.ser = serial.Serial(selected_port, self.baud_rate)
                 time.sleep(1)
 
+                # Calculate tempo
+                note_name = self.note_options.currentText()
+                note_modifier = self.note_options_dict[note_name]
+                whole_note_duration = int(60000 / self.tempo_box.value() * note_modifier)  # in milliseconds
+
                 # Send data
-                self.ser.write(self.tempo_box.value().to_bytes(4, byteorder='big'))
+                self.ser.write(whole_note_duration.to_bytes(4, byteorder='big'))
                 self.ser.write(self.music_sheet.is_double_handed.to_bytes(1, byteorder='big'))
                 SerialCommands.send_serial_data(self.right_commands, self.ser)
                 SerialCommands.send_serial_data(self.left_commands, self.ser)
@@ -171,6 +200,9 @@ class GUI(QWidget):
         )
         if image_path:
             self.image_path = image_path
+            return True
+        else:
+            return False
 
     def display_cv_image(self, cv_img):
         # Convert to RGB
@@ -186,6 +218,12 @@ class GUI(QWidget):
         pixmap = QPixmap.fromImage(q_image)
         self.image_label.setPixmap(pixmap)
         self.image_label.adjustSize()
+
+    def add_pdf(self):
+        print('pdf')
+
+    def add_midi(self):
+        print('midi')
 
     def refresh_com_ports(self):
         current = self.port_box.currentText()

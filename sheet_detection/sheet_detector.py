@@ -11,9 +11,17 @@ from ultralytics import YOLO
 PitchInfo = namedtuple("PitchInfo", ["pitch_value", "pitch_name"])
 
 
+def display_cv_image(image, name='Image name', already_colored=False):
+    if not already_colored:
+        image = (1 - image) * 255
+    cv2.imshow(name, image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
 class Staff:
     def __init__(self, music_sheet_parent):
-        self.nr_of_lines_above_or_below = 4
+        self.nr_of_lines_above_or_below = 5
         self.music_sheet_parent = music_sheet_parent
         self.x1 = 0
         self.y1 = 0
@@ -43,10 +51,16 @@ class Staff:
         """*crop* should be taken from the original image (not binary).
         \nIt is used to set both *self.crop_original* and *self.crop_binary*"""
         self.crop_original = crop
+        # self.crop_original = cv2.line(self.crop_original, (0, self.y1 - self.window_y1_global), (self.width-1, self.y1 - self.window_y1_global), color=(255, 0, 0), thickness=2)
+        # self.crop_original = cv2.line(self.crop_original, (0, self.y2 - self.window_y1_global), (self.width-1, self.y2 - self.window_y1_global), color=(255, 0, 0), thickness=2)
         self.crop_binary = binarize_image(crop, normalize=True, invert=True)
 
     def detect_with_yolo(self):
-        # cv2.imwrite('temp.jpg', self.crop_original)
+        """
+        Applies detection with the YOLO model.
+        Sorts the detection.boxes by x-coordinate.
+        Sets the clef.
+        """
         self.detections = self.model_note(self.crop_original, verbose=False)[0]
 
         # Sort boxes by the x-coord of the center
@@ -55,14 +69,15 @@ class Staff:
         boxes.data = boxes.data[sorted_indices]
         self.detections.boxes = boxes
 
-    def detect_clef(self):
+        # Set the clef
         names = self.detections.names
-        self.clef = next((names[box.cls.item()] for box in self.detections.boxes if 'clef' in names[box.cls.item()]), None)
+        self.clef = next((names[box.cls.item()] for box in self.detections.boxes if 'clef' in names[box.cls.item()]),
+                         None)
 
     def detect_noteheads(self):
-        # ---- Apply Run Length Encoding for staff removal ----
         crop_binary_copy = np.copy(self.crop_binary)
 
+        # ---- Apply Run Length Encoding for staff removal ----
         # Remove the vertical runs that are thinner than staffline_width
         crop_binary_copy = vertical_rle_removal(crop_binary_copy, self.staffline_width)
 
@@ -92,12 +107,11 @@ class Staff:
             [1, 1, 1, 1, 1],
             [0, 1, 1, 1, 0]], dtype=np.uint8)
         crop_for_fragmented_notes = cv2.morphologyEx(crop_for_fragmented_notes, cv2.MORPH_OPEN, kernel)
-        noteheads_crop = cv2.morphologyEx(crop_binary_copy, cv2.MORPH_OPEN, kernel, iterations=1)
+        crop_binary_copy = cv2.morphologyEx(crop_binary_copy, cv2.MORPH_OPEN, kernel, iterations=1)
 
         # Save only the elliptical contours
-        filtered_contours = get_elliptical_contours(noteheads_crop)
+        filtered_contours = get_elliptical_contours(crop_binary_copy)
         filtered_contours2 = get_elliptical_contours(crop_for_fragmented_notes)
-        # self.noteheads_contours = filtered_contours + filtered_contours2  # Combine the contours
         comb_img = np.zeros(self.crop_binary.shape, dtype=np.uint8)
         cv2.drawContours(comb_img, filtered_contours + filtered_contours2, -1, (1, 0, 0), -1)
         self.noteheads_contours, _ = cv2.findContours(comb_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -109,7 +123,7 @@ class Staff:
 
         crop = np.copy(self.crop_binary)
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (math.ceil(self.staffline_width / 2), self.height))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (math.ceil(self.staffline_width / 2), self.staff_height))
         barlines_crop = cv2.morphologyEx(crop, cv2.MORPH_OPEN, kernel)
         contours, _ = cv2.findContours(barlines_crop, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         bars = [cv2.boundingRect(cnt) for cnt in contours]
@@ -199,6 +213,7 @@ class Staff:
         box_idx = 0
         notehead_idx = 0
         modifier = 0
+        new_noteheads_centroids = []
         # To determine if there are stacked boxes for notes
         # (which would mean they are played together and not one after the other)
         prev_x1x2 = (0, 0)
@@ -225,6 +240,7 @@ class Staff:
                                 y = self.noteheads_centroids[j][1]
                                 if x1 < x < x2 and y1 < y < y2:
                                     pitch_info = self.assign_pitch((x, y))
+                                    new_noteheads_centroids.append((x, y))
 
                                     if pitch_info.pitch_name in global_diez:
                                         modifier = 0.5
@@ -240,6 +256,7 @@ class Staff:
                             # If no notehead was found and this is a 'Full-note', assign a pitch by center of box.
                             if not pitch_found and box_name == 'Full-note':
                                 c = ((x1 + x2) / 2, (y1 + y2) / 2)
+                                new_noteheads_centroids.append(c)
                                 note.pitch.append(self.assign_pitch(c).pitch_value)
 
                         # Make the pitches be unique (pitch is a list in order to account for chords;
@@ -260,11 +277,13 @@ class Staff:
                     break
 
             # Only include measures that have detections.
-            if measure:
-                self.measures.append(measure)
+            # if measure:
+            self.measures.append(measure)
+
+        self.noteheads_centroids = new_noteheads_centroids
 
     def assign_pitch(self, centroid):
-        y_ref = bisect.bisect_right(self.intervals_idx, self.y2n) - 1
+        y_ref = bisect.bisect_right(self.intervals_idx, self.y2_local) - 1
         x, y = centroid
         y_aux = bisect.bisect_right(self.intervals_idx, y) - 1
         pitch = y_ref - y_aux
@@ -281,30 +300,32 @@ class Staff:
         # The lines by which the pitch is detected; any notehead center that falls between
         # two lines, is of that pitch
         tol = 1
-        line_beginnings = [max(line - self.window_y1 - tol, 0) for line in line_beginnings]
-        line_endings = [max(line - self.window_y1 + tol, 0) for line in line_endings]
+        line_beginnings = [max(line - self.window_y1_global - tol, 0) for line in line_beginnings]
+        line_endings = [line - self.window_y1_global + tol for line in line_endings]
 
-        slw_coef = [i for i in range(1, self.nr_of_lines_above_or_below+1) for _ in range(2)]  # slw = staffline_width
-        ssw_coef = [0] + slw_coef[:-2]  # ssw = staffspace_width
+        ssw_coef = [i for i in range(1, self.nr_of_lines_above_or_below + 1) for _ in range(2)]  # slw = staffline_width
+        slw_coef = [0] + ssw_coef[:-1]  # ssw = staffspace_width
         slw_idx = [c * (self.staffline_width + tol) for c in slw_coef]
         ssw_idx = [c * (self.staffspace_width - tol) for c in ssw_coef]
-        intervals_above = [0] + [max(a+b, 0) for a, b in zip(slw_idx, ssw_idx)]
 
-        ssw_coef = [i for i in range(1, self.nr_of_lines_above_or_below + 1) for _ in range(2)]
-        slw_coef = [0] + ssw_coef[:-1]
-        slw_idx = [c * (self.staffline_width + tol) for c in slw_coef]
-        ssw_idx = [c * (self.staffspace_width - tol) for c in ssw_coef]
-        intervals_below = [max(line_endings[-1]+a+b, 0) for a, b in zip(slw_idx, ssw_idx)]
+        intervals_above = [max(line_beginnings[0] - (a + b), 0) for a, b in zip(slw_idx, ssw_idx)]
+        intervals_below = [line_endings[-1] + a + b for a, b in zip(slw_idx, ssw_idx)]
 
         self.intervals_idx = line_beginnings + line_endings + intervals_above + intervals_below
+
         self.intervals_idx.sort()
 
+
+        # for l in self.intervals_idx:
+        #     cv2.line(self.crop_original, (0, l), (100, l), color=(200, 0, 0), thickness=1)
+        # display_cv_image(self.crop_original, already_colored=True)
+
     @property
-    def width(self):
+    def staff_width(self):
         return self.x2 - self.x1
 
     @property
-    def height(self):
+    def staff_height(self):
         return self.y2 - self.y1
 
     @property
@@ -328,16 +349,16 @@ class Staff:
         return self.music_sheet_parent.slw_tolerance
 
     @property
-    def window_y1(self):
+    def window_y1_global(self):
         return self.y1 - self.window_pad
 
     @property
-    def y2n(self):
-        return self.y2 - self.window_y1
+    def y2_local(self):
+        return self.y2 - self.window_y1_global
 
     @property
     def window_height(self):
-        return self.height + 2 * self.window_pad
+        return self.staff_height + 2 * self.window_pad
 
 
 class MusicSheet:
@@ -368,7 +389,7 @@ class MusicSheet:
         self.image_path = image_path
 
     def set_image(self, image_path):
-        """Takes the image path."""
+        """Takes the image path. Sets the original image and the binarized one"""
         self.original_image = cv2.imread(image_path)
         self.height = self.original_image.shape[0]
         self.width = self.original_image.shape[1]
@@ -409,6 +430,7 @@ class MusicSheet:
                 line_beginnings.append(indices[j])  # A new line begins
                 line_endings.append(indices[j-1])  # Previous line ended
 
+        # Append
         line_endings.append(indices[-1])
         all_line_widths.append(line_width)
         self.max_staffline_width = max(all_line_widths)
@@ -422,7 +444,6 @@ class MusicSheet:
     def detect_staves(self):
         """Detect the y-positions that bound the staves. Staves are described as 5 consecutive stafflines."""
         line_beginnings, line_endings = self._calculate_staffline_and_staffspace_widths()
-
         # Determine staves as consecutive lines close to each other
         space_between_line_beginnings = self.staffspace_width + self.staffline_width + self.slw_tolerance
         num_of_staff_lines = 5
@@ -430,33 +451,57 @@ class MusicSheet:
         beginning_of_staff = line_beginnings[0]
         start_idx = 0
 
+        # Iterate over detected line beginnings, starting from the second one
         for j in range(1, len(line_beginnings)):
+            # Create a new Staff object and associate it with the current music sheet
             staff = Staff(music_sheet_parent=self)
+
             start_of_line = line_beginnings[j]
+
+            # Check if the current line is close enough to the previous one to be considered part of the same staff
             if start_of_line - line_beginnings[j - 1] <= space_between_line_beginnings:
-                consecutives += 1
+                consecutives += 1  # Increase the count of consecutive lines
             else:
+                # If the gap is too big, reset for a new potential staff
                 consecutives = 1
                 beginning_of_staff = start_of_line
                 start_idx = j
+
+            # If we have found the expected number of lines for a staff (e.g., 5)
             if consecutives == num_of_staff_lines:
-                staff.y1 = beginning_of_staff
-                # staff.y2 = start_of_line + self.staffline_width  # Add line_width to match the end of staff
-                staff.y2 = line_endings[j]
-                # Compute the max window_pad that keeps the crop within bounds
+                staff.x1 = 0
+                staff.x2 = self.width
+                staff.y1 = beginning_of_staff  # Set the top boundary of the staff
+                staff.y2 = line_endings[j]  # Set the bottom boundary of the staff (using corresponding line ending)
+
+                # Calculate how much padding can be added above and below the staff without exceeding image bounds
                 max_pad_above = staff.y1
                 max_pad_below = self.height - staff.y2
-                staff.window_pad = min((space_between_line_beginnings - self.slw_tolerance)
-                                       * staff.nr_of_lines_above_or_below,
-                                       max_pad_above, max_pad_below)
 
-                staff.assign_line_intervals(line_beginnings[start_idx:j + 1], line_endings[start_idx:j + 1])
+                # Determine padding based on spacing tolerance and max allowable space
+                staff.window_pad = min(
+                    (space_between_line_beginnings - self.slw_tolerance) * staff.nr_of_lines_above_or_below,
+                    max_pad_above,
+                    max_pad_below
+                )
+
+                # # Assign the list of line intervals that make up this staff
+                # staff.assign_line_intervals(line_beginnings[start_idx:j + 1], line_endings[start_idx:j + 1])
+
+                # Define the crop region for the staff image including the padding
                 crop_limit_above = staff.y1 - staff.window_pad
                 crop_limit_below = staff.y2 + staff.window_pad
 
-                staff.set_crop(
-                    self.original_image[crop_limit_above:crop_limit_below, 0:self.width])
+                # Crop the staff from the original image and store it
+                staff.set_crop(self.original_image[crop_limit_above:crop_limit_below, 0:self.width])
+
+                staff.assign_line_intervals(line_beginnings[start_idx:j + 1], line_endings[start_idx:j + 1])
+
+
+                # Add the completed staff to the list of all detected staves
                 self.all_staves.append(staff)
+
+                # Reset counters and markers for the next potential staff
                 beginning_of_staff = start_of_line
                 start_idx = j
                 consecutives = 1
@@ -493,7 +538,7 @@ class MusicSheet:
         undetected notes, they will go out of phase"""
         if self.is_double_handed:
             # Verify if the durations inside the measure of Treble-staff match the durations in Bass-staff measures
-            # trim the excess or add a REST to fill in the duration
+            # add a REST to fill in the duration
             for staff, next_staff in zip(self.all_staves[:-1], self.all_staves[1:]):
                 if staff.clef == 'Treble-clef' and next_staff.clef == 'Bass-clef':
                     # Assume the measures are synced between Treble and Bass
@@ -537,7 +582,6 @@ class MusicSheet:
         self.detect_staves()
         for staff in self.all_staves:
             staff.detect_with_yolo()
-            staff.detect_clef()
             staff.detect_noteheads()
             staff.detect_barlines()
 
@@ -549,7 +593,6 @@ class MusicSheet:
 
         self.sync_measures_time()
         self.calculate_time_series()
-        # print()
 
     def show_original_image(self):
         cv2.imshow('Original Image', self.original_image)
@@ -562,18 +605,21 @@ class MusicSheet:
         cv2.destroyAllWindows()
 
     def get_results_image(self, show_noteheads_contours=True, show_bounding_boxes=True,
-                     show_barlines=True, show_noteheads_centroids=False, show_class_label=False, height=550):
+                          show_barlines=True, show_noteheads_centroids=False, show_class_label=False,
+                          show_noteheads_pitch=False, height=550):
         image = np.copy(self.original_image)
 
         for staff in self.all_staves:
             if show_barlines:
                 for x in staff.barlines_x_coord:
                     cv2.line(image, (x, staff.y1), (x, staff.y2), (0, 0, 255), 3)
+
             if show_noteheads_contours:
                 # Contours in staff are with coordinates relative to the crop, translate them relative to original image
                 offset = np.array([0, staff.y1 - staff.window_pad])
                 shifted_contours = [contour + offset for contour in staff.noteheads_contours]
                 cv2.drawContours(image, shifted_contours, -1, (255, 0, 0), 2)
+
             if show_bounding_boxes:
                 offset = staff.y1 - staff.window_pad
                 for box in staff.detections.boxes:
@@ -584,10 +630,19 @@ class MusicSheet:
                     if show_class_label:
                         cv2.putText(image, str(int(cls_idx)), (x1, y1 - 5 + offset), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.6, (255, 0, 0), 1, lineType=cv2.LINE_AA)
+
             if show_noteheads_centroids:
                 offset = staff.y1 - staff.window_pad
                 for c in staff.noteheads_centroids:
                     image = cv2.circle(image, (int(c[0]), int(c[1]) + offset), 2, (0, 255, 255), thickness=-1)
+
+            if show_noteheads_pitch:
+                offset = staff.y1 - staff.window_pad
+                for c in staff.noteheads_centroids:
+                    pitch, _ = staff.assign_pitch(c)
+                    cv2.putText(image, str(pitch), (int(c[0]) + 5, int(c[1]) + offset),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+
         image, _ = resize_with_aspect_ratio(image, height)
 
         return image
@@ -735,6 +790,7 @@ def horizontal_rle_removal(image, lower_thresh=0.0, upper_thresh=1000000, backgr
             image[row_idx, beginning_idx:col_idx] = background
 
     return image
+
 
 
 
