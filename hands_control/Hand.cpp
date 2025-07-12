@@ -155,14 +155,7 @@ Hand::DecodedCommand Hand::decodeCommand(Hand::CommandStruct cmd){
   output.position = cmd.position / 2.0f;
   for(int i = 0; i < NUM_OF_FINGERS; i++){
     output.angles[i] = cmd.angles[i] / 2.0f;
-
-    if (cmd.durations[i] != 0){
-      output.durations[i] = 1.0f / cmd.durations[i] * time_per_beat;
-    }
-    else{
-      output.durations[i] = 0;
-    }
-
+    output.durations[i] = cmd.durations[i];
     output.back_solenoids_states[i] = cmd.back_solenoids_states[i];
     output.front_solenoids_states[i] = cmd.front_solenoids_states[i];
   }
@@ -247,8 +240,8 @@ void Hand::update(unsigned long reference_time=millis()) {
       waiting_start = millis();
       if(needs_waiting){
         // Wait only if fingers need to rotate
-        // waiting_time = 60;
-        delay(70);
+        waiting_time = 70;
+        // delay(70);
       }
       else{
         waiting_time = 0;
@@ -259,9 +252,9 @@ void Hand::update(unsigned long reference_time=millis()) {
       unsigned long compensation_end = millis();
       compensation += compensation_end - compensation_start + waiting_time;
 
-      // current_state = State::WAITING;
-      // state_after_waiting = State::READY_TO_PLAY;
-      current_state = State::READY_TO_PLAY;
+      current_state = State::WAITING;
+      state_after_waiting = State::READY_TO_PLAY;
+      // current_state = State::READY_TO_PLAY;
       break;
     }
 

@@ -30,11 +30,10 @@ using State = Hand::State;
   int right_equilibrium_angles[] = {78, 80, 82, 80, 85};
   int left_solenoid_pins[] = {29, 30, 31, 32, 33, 34, 35, 36, 37, 38};
   int left_servo_pins[] = {24, 25, 26, 27, 28};
-  int left_equilibrium_angles[] = {80, 73, 82, 85, 82};
+  int left_equilibrium_angles[] = {78, 73, 82, 85, 82};
 /* ***************** */
 
 /* Global variables */
-int whole_note_duration = 0;
 bool is_double_handed = true;
 /* **************** */
 
@@ -50,10 +49,8 @@ void setup() {
   Serial.println("Arduino Ready!");
 
   // READ DATA from Serial
-  whole_note_duration = read_int_from_serial();
   while(!Serial.available());
   is_double_handed = Serial.read();
-  // is_double_handed = false;
   readCommands(right_hand);
 
   if (is_double_handed){
@@ -67,7 +64,6 @@ void setup() {
   right_hand.getFingersInNormalPosition();
   right_hand.setLimitSwitch(right_button_pin);
   right_hand.setMotorParams(acc, maxSpeed);
-  right_hand.setTimePerBeat(whole_note_duration);
   right_hand.setHandedness('r');
   right_hand.setTheOtherHand(left_hand);
 
@@ -76,7 +72,6 @@ void setup() {
   left_hand.getFingersInNormalPosition();
   left_hand.setLimitSwitch(left_button_pin);
   left_hand.setMotorParams(acc, maxSpeed);
-  left_hand.setTimePerBeat(whole_note_duration);
   left_hand.setHandedness('l');
   left_hand.setTheOtherHand(right_hand);
   
@@ -154,34 +149,28 @@ void homing(int speed=500){
 
 void readCommands(Hand &hand){
   byte one_byte = 8;
-  const int timeoutIterations = 1000;  // 1000 iterations * 1ms delay = approx. 1 second
-  int counter = 0;
 
   // Wait for position byte
-  while (Serial.available() < one_byte && counter < timeoutIterations) {
-    delay(1);  
-    counter++;
-  }
-
-  // // Exit if no data is available
-  // if (counter > timeoutIterations){
-  //   return;  // It may happen that left_hand has no commands (for songs played with only one hand); return if waiting is too long
-  // }
+  while (Serial.available() < one_byte);
   
   // Read the length of hand commands
   hand.command_list_length = read_int_from_serial();
+  Serial.println(hand.command_list_length);
 
   hand.commands = new Hand::CommandStruct[hand.command_list_length];
 
   // Read the commands for hand
   for (int i = 0; i < hand.command_list_length; i++){
     readCommandStruct(hand.commands[i]);
+    Serial.println(i);
+    // printCommandStruct(hand.commands[i]);
   }
+
 }
 
 
 int read_int_from_serial(){
-  while(Serial.available() <= 4);
+  while(Serial.available() < 4);
   byte one_byte = 8;
   int result = 0;
   for (int i = 0; i < 4; i++) {
@@ -215,8 +204,9 @@ void readCommandStruct(Hand::CommandStruct &command) {
 
     while (Serial.available() < NUM_OF_FINGERS);
     for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        command.durations[i] = Serial.read();
+        command.durations[i] = read_int_from_serial();
     }
+
 }
 
 

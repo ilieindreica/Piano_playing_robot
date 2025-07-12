@@ -15,7 +15,7 @@ class Hand{
       int8_t angles[NUM_OF_FINGERS];
       uint8_t back_solenoids_states[NUM_OF_FINGERS];
       uint8_t front_solenoids_states[NUM_OF_FINGERS];
-      uint8_t durations[NUM_OF_FINGERS];
+      int durations[NUM_OF_FINGERS];
     };
 
     // A way to store the decoded commands for easier access and to prevent forgetting decoding
