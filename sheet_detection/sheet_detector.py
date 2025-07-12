@@ -6,6 +6,7 @@ import bisect
 import torch
 from Notes import NoteOrRest, NoteWithPosition
 from ultralytics import YOLO
+import configLib as cfg
 
 
 PitchInfo = namedtuple("PitchInfo", ["pitch_value", "pitch_name"])
@@ -372,9 +373,7 @@ class MusicSheet:
         self.model_note = None
         self.slw_tolerance = 4
         self.is_double_handed = True  # True if it contains bass-clef, False if only treble-clef
-        self.time_series = {}
-        self.main_octave = 4
-        self.nr_white_keys_in_octave = 7
+        self.time_series = []
         if image is None:
             self.original_image = np.zeros((1, 1))
             self.binary_image = np.zeros((1, 1))
@@ -553,29 +552,29 @@ class MusicSheet:
 
     def calculate_time_series(self):
         treble_time, bass_time = 0, 0
+        right_series = []
+        left_series = []
 
         for staff in self.all_staves:
             for measure in staff.measures:
                 for note in measure:
-                    time_ref = treble_time if staff.clef == 'Treble-clef' else bass_time
-                    hand = 'right' if staff.clef == 'Treble-clef' else 'left'
-                    # the value for treble octave is chosen in order to accommodate for main_octave selected afterward
-                    octave_offset = -1 if staff.clef == 'Treble-clef' else -2  # Bass is one octave lower
-
+                    # Bass is one octave lower
+                    time_ref, series, octave = (treble_time, right_series, cfg.config['MAIN_OCTAVE'] - 1) \
+                                                        if staff.clef == 'Treble-clef'\
+                                                        else (bass_time, left_series, cfg.config['MAIN_OCTAVE'] - 2)
+                    chord = []
                     for pitch in note.pitch:
-                        piano_key_code = (self.nr_white_keys_in_octave * octave_offset + pitch if
+                        piano_key_code = (cfg.config['NUM_OF_WHITE_KEYS_IN_OCTAVE'] * octave + pitch if
                                           pitch != 'REST' else 'REST')
-                        self.time_series.setdefault(time_ref, {'left': [], 'right': []})[hand].append(
-                            NoteWithPosition(piano_key_code, note.duration)
-                        )
+                        chord.append(NoteWithPosition(piano_key_code, note.duration))
+                    series.append(chord)
 
                     if staff.clef == 'Treble-clef':
                         treble_time += note.duration
                     else:
                         bass_time += note.duration
 
-        # self.time_series.sort(key=lambda x: x[0])
-        # self.time_series = groupby(self.time_series, key=lambda x: x[0])
+        self.time_series = [right_series, left_series]
 
     def run_detection(self):
         """Calls every method needed to detect anything necessary. At the end, computes the time series."""

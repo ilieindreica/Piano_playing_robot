@@ -1,15 +1,24 @@
+import configLib as cfg
+
+
+MARK = 0xAA
+F = cfg.config['NUM_OF_FINGERS']
+
+
 def send_serial_data(commands, ser):
-    ser.write(len(commands).to_bytes(4, byteorder='big'))
+    ser.write(len(commands).to_bytes(4, 'big'))
+
     for pos, rotations, back_s, front_s, durations in commands:
-        ser.write(pos.to_bytes(1, byteorder='big', signed=False))
-        for r in rotations:
-            ser.write(r.to_bytes(1, byteorder='big', signed=True))
-        for b in back_s:
-            ser.write(b.to_bytes(1, byteorder='big', signed=False))
-        for f in front_s:
-            ser.write(f.to_bytes(1, byteorder='big', signed=False))
-        for d in durations:
-            ser.write(d.to_bytes(1, byteorder='big', signed=False))
+        ser.write(int(pos).to_bytes(1, 'big'))
+        for i in range(F):
+            ser.write(int(rotations[i]).to_bytes(1, 'big', signed=True))
+        for i in range(F):
+            ser.write(int(back_s[i]).to_bytes(1, 'big'))
+        for i in range(F):
+            ser.write(int(front_s[i]).to_bytes(1, 'big'))
+        for i in range(F):
+            ser.write(int(durations[i]).to_bytes(4, 'big'))
+
 
 
 

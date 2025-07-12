@@ -12,8 +12,7 @@ class NoteOrRest:
 # position is used instead of the concept of pitch
 class NoteWithPosition:
     def __init__(self, position=None, duration=0.0):
-        # Use a list for position so that chords (multiple pitches) can be stored
-        self.pos = position if position is not None else []
+        self.pos = position
         self.duration = duration
 
     def __repr__(self):

@@ -16,6 +16,7 @@ import ActionScheduler
 import serial
 import serial.tools.list_ports
 import SerialCommands
+import midi2notes_converter as midconv
 
 
 class SerialListener(QThread):
@@ -40,10 +41,13 @@ class SerialListener(QThread):
 
 
 class GUI(QWidget):
+    # noinspection PyUnresolvedReferences
     def __init__(self):
         super().__init__()
         # ----------- CONFIG -------------------
         # The pretrained model for notes
+        self.left_commands_copy = None
+        self.right_durations_copy = None
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.model_note_path = self.script_dir + '\\best.pt'
         self.default_media_folder = self.script_dir + '\\sheets'
@@ -58,8 +62,10 @@ class GUI(QWidget):
         self.music_sheet = None
         self.left_commands = []
         self.right_commands = []
+        self.is_double_handed = False
         self.ser = None
         self.listener_thread = None
+        self.mode = None
 
         self.setWindowTitle("Music Sheet Recognition")
         self.setGeometry(500, 100, 800, 900)
@@ -73,12 +79,12 @@ class GUI(QWidget):
 
         # Add PDF button
         self.add_pdf_button = QPushButton('Add PDF')
-        self.add_pdf_button.clicked.connect(self.add_pdf)
+        self.add_pdf_button.clicked.connect(self.load_pdf)
         main_layout.addWidget(self.add_pdf_button, 0, 1, 1, 1)
 
         # Add MIDI button
         self.add_midi_button = QPushButton('Add MIDI')
-        self.add_midi_button.clicked.connect(self.add_midi)
+        self.add_midi_button.clicked.connect(self.load_midi)
         main_layout.addWidget(self.add_midi_button, 0, 2, 1, 1)
 
         # Tempo Box
@@ -136,7 +142,7 @@ class GUI(QWidget):
         self.music_sheet.set_model_note(self.model_note_path)
 
         if self.load_image():
-            self.image_label.setText("Processing...")
+            self.image_label.setText("Processing Image...")
             # Refresh the Label
             self.image_label.repaint()
 
@@ -145,6 +151,7 @@ class GUI(QWidget):
             self.music_sheet.resize_image(height=900)
 
             self.music_sheet.run_detection()
+            self.is_double_handed = self.music_sheet.is_double_handed
             image = self.music_sheet.get_results_image(show_noteheads_centroids=True,
                                                        show_bounding_boxes=True,
                                                        show_noteheads_contours=False,
@@ -155,14 +162,31 @@ class GUI(QWidget):
             self.display_cv_image(image)
             self.left_commands, self.right_commands = (ActionScheduler.get_action_commands
                                                        (self.music_sheet.time_series,
-                                                        self.music_sheet.is_double_handed))
+                                                        self.is_double_handed))
+            self.right_durations_copy = [com[4] for com in self.right_commands]
+            self.left_commands_copy = [com[4] for com in self.left_commands]
+
+            self.mode = 'image'
 
     def send_commands(self):
+        # Calculate tempo; only for songs extracted from image; MIDI accounts for its own tempo
+        if self.mode == 'image':
+            note_name = self.note_options.currentText()
+            note_modifier = self.note_options_dict[note_name]
+            whole_note_duration = int(60000 / self.tempo_box.value() * note_modifier)  # in milliseconds
+
+            for i, com in enumerate(self.right_commands):
+                com[4] = [d * whole_note_duration for d in self.right_durations_copy[i]]
+
+            for i, com in enumerate(self.left_commands):
+                com[4] = [d * whole_note_duration for d in self.left_commands_copy[i]]
+
+        # Print command lists
         max_len = max(len(self.left_commands), len(self.right_commands))
         for i in range(max_len):
             com1 = self.left_commands[i] if i < len(self.left_commands) else None
             com2 = self.right_commands[i] if i < len(self.right_commands) else None
-            print(f'{com1}      {com2}')
+            print(f'{i}   {com1}      {com2}')
 
         if self.right_commands:
             try:
@@ -172,14 +196,8 @@ class GUI(QWidget):
                 self.ser = serial.Serial(selected_port, self.baud_rate)
                 time.sleep(1)
 
-                # Calculate tempo
-                note_name = self.note_options.currentText()
-                note_modifier = self.note_options_dict[note_name]
-                whole_note_duration = int(60000 / self.tempo_box.value() * note_modifier)  # in milliseconds
-
                 # Send data
-                self.ser.write(whole_note_duration.to_bytes(4, byteorder='big'))
-                self.ser.write(self.music_sheet.is_double_handed.to_bytes(1, byteorder='big'))
+                self.ser.write(self.is_double_handed.to_bytes(1, byteorder='big'))
                 SerialCommands.send_serial_data(self.right_commands, self.ser)
                 SerialCommands.send_serial_data(self.left_commands, self.ser)
 
@@ -219,11 +237,23 @@ class GUI(QWidget):
         self.image_label.setPixmap(pixmap)
         self.image_label.adjustSize()
 
-    def add_pdf(self):
+    def load_pdf(self):
         print('pdf')
+        self.mode = 'image'
 
-    def add_midi(self):
-        print('midi')
+    def load_midi(self):
+        self.image_label.setText("Processing MIDI...")
+        midi_path, _ = QFileDialog.getOpenFileName(
+            self, "Select MIDI File", self.default_midi_folder, "MIDI (*.mid)"
+        )
+        if midi_path:
+            time_series, self.is_double_handed = midconv.extract_notes_from_midi(midi_path)
+            self.left_commands, self.right_commands = (ActionScheduler.get_action_commands(time_series, False))
+            self.image_label.setText("MIDI ready to go!")
+            self.mode = 'midi'
+            return True
+        else:
+            return False
 
     def refresh_com_ports(self):
         current = self.port_box.currentText()
