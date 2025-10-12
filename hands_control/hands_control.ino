@@ -2,6 +2,7 @@
 #include <AccelStepper.h>
 #include "Hand.h"
 #include "Piano-robot_setup_config.h"
+#include "SerialCommunication.h"
 
 using State = Hand::State;
 
@@ -13,6 +14,11 @@ using State = Hand::State;
   #define right_button_pin 7
   #define left_button_pin 8
   #define motorInterfaceType 1  // for drivers that use only dir and step
+  #define MS1_right 10
+  #define MS2_right 11
+  #define MS1_left 12
+  #define MS2_left 13
+  #define MS_level 2  // Microstepping factor
 /* ================================================================= */
 
 /* Class objects */
@@ -38,7 +44,7 @@ bool is_double_handed = true;
 /* **************** */
 
 /* Declarations for functions */
-  void homing(int speed=500);
+  void homing(int speed=2000);
   void readCommands(Hand &hand);
   void moveToKey(AccelStepper &motor, int key_index);
   void move_hands(int pos_left, int pos_right);
@@ -48,17 +54,18 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Arduino Ready!");
 
-  // READ DATA from Serial
-  while(!Serial.available());
-  is_double_handed = Serial.read();
-  readCommands(right_hand);
+  pinMode(MS1_right, OUTPUT);
+  pinMode(MS2_right, OUTPUT);
+  digitalWrite(MS1_right, HIGH);
+  digitalWrite(MS2_right, LOW);
 
-  if (is_double_handed){
-    readCommands(left_hand);
-  }
+  pinMode(MS1_left, OUTPUT);
+  pinMode(MS2_left, OUTPUT);
+  digitalWrite(MS1_left, HIGH);
+  digitalWrite(MS2_left, LOW);
 
   // Initialize hands
-  float maxSpeed = 4000.0, acc = 10000.0;
+  float maxSpeed = 5000.0, acc = 30000.0;
   right_hand.setFingers(right_solenoid_pins, right_servo_pins);
   right_hand.setEquilibriumAngles(right_equilibrium_angles);
   right_hand.getFingersInNormalPosition();
@@ -74,18 +81,41 @@ void setup() {
   left_hand.setMotorParams(acc, maxSpeed);
   left_hand.setHandedness('l');
   left_hand.setTheOtherHand(right_hand);
-  
+
   homing();
 
+  // READ DATA from Serial
+  while(!Serial.available());
+  is_double_handed = Serial.read();
+  right_hand.command_list_length = read_int_from_serial();
+  left_hand.command_list_length = read_int_from_serial();
+
+  if (!is_double_handed){
+    right_hand.isSolo = true;
+  }
+  
 }
 
-
+State r_prev=right_hand.getState(), l_prev=left_hand.getState();
 void loop() {
 
   if (is_double_handed){
     unsigned long reference_time=millis();
     right_hand.update(reference_time);
     left_hand.update(reference_time);
+
+    if(left_hand.command.note_rank == 0 && right_hand.command.note_rank == 0){
+      recalculatingWaiterNeeded = true;
+    }
+
+    // if(r_prev != right_hand.getState()){
+    //   r_prev = right_hand.getState();
+    //   Serial.print('r'); Serial.println(right_hand.stateToStr(r_prev));
+    // }
+    // if(l_prev != left_hand.getState()){
+    //   l_prev = left_hand.getState();
+    //   Serial.print('l'); Serial.println(left_hand.stateToStr(l_prev));
+    // }
   }
 
   else{
@@ -103,19 +133,21 @@ void loop() {
     left_hand.setState(State::IDLE);
     right_hand.resetCompensation();
     left_hand.resetCompensation();
+    Serial.println("FINISHED");
     delay(2000);
   }
-  else if(right_hand.getState() == State::FINISHED){
+  else if(right_hand.getState() == State::FINISHED && !is_double_handed){
     right_hand.command_index = 0;
     right_hand.setState(State::IDLE);
     right_hand.resetCompensation();
+    Serial.println("FINISHED solo");
     delay(2000);
   }
 
 }
 
 
-void homing(int speed=500){
+void homing(int speed){
 
   //
   right_hand.motor.moveTo(100000);
@@ -147,101 +179,8 @@ void homing(int speed=500){
 }
 
 
-void readCommands(Hand &hand){
-  byte one_byte = 8;
-
-  // Wait for position byte
-  while (Serial.available() < one_byte);
-  
-  // Read the length of hand commands
-  hand.command_list_length = read_int_from_serial();
-  Serial.println(hand.command_list_length);
-
-  hand.commands = new Hand::CommandStruct[hand.command_list_length];
-
-  // Read the commands for hand
-  for (int i = 0; i < hand.command_list_length; i++){
-    readCommandStruct(hand.commands[i]);
-    Serial.println(i);
-    // printCommandStruct(hand.commands[i]);
-  }
-
-}
 
 
-int read_int_from_serial(){
-  while(Serial.available() < 4);
-  byte one_byte = 8;
-  int result = 0;
-  for (int i = 0; i < 4; i++) {
-    result = (result << one_byte) | Serial.read();  
-  }
-
-  return result;
-}
-
-
-void readCommandStruct(Hand::CommandStruct &command) {
-    // Wait for position byte
-    while (Serial.available() < 1);
-    command.position = Serial.read();
-
-    // Wait for NUM_OF_FINGERS bytes
-    while (Serial.available() < NUM_OF_FINGERS);
-    for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        command.angles[i] = Serial.read();
-    }
-
-    while (Serial.available() < NUM_OF_FINGERS);
-    for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        command.back_solenoids_states[i] = Serial.read();
-    }
-
-    while (Serial.available() < NUM_OF_FINGERS);
-    for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        command.front_solenoids_states[i] = Serial.read();
-    }
-
-    while (Serial.available() < NUM_OF_FINGERS);
-    for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        command.durations[i] = read_int_from_serial();
-    }
-
-}
-
-
-void printCommandStruct(const Hand::CommandStruct &cmd) {
-    Serial.print("Position: ");
-    Serial.println(cmd.position);
-
-    Serial.println("Angles: ");
-    for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        Serial.print(cmd.angles[i]);
-        Serial.print(" ");
-    }
-    Serial.println();
-
-    Serial.println("Back Solenoids: ");
-    for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        Serial.print(cmd.back_solenoids_states[i]);
-        Serial.print(" ");
-    }
-    Serial.println();
-
-    Serial.println("Front Solenoids: ");
-    for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        Serial.print(cmd.front_solenoids_states[i]);
-        Serial.print(" ");
-    }
-    Serial.println();
-
-    Serial.println("Durations: ");
-    for (int i = 0; i < NUM_OF_FINGERS; i++) {
-        Serial.print(cmd.durations[i]);
-        Serial.print(" ");
-    }
-    Serial.println();
-}
 
 
 

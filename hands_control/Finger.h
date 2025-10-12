@@ -31,6 +31,7 @@ class Finger{
     bool canRotate(int newAngle);
     void rotate(int newAngle, bool bypass_constraint=false);
     void increaseDuration(float increase);
+    void stopPressing();
     void update();
 };
 

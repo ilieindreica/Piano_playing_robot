@@ -81,10 +81,9 @@ void Finger::rotate(int newAngle, bool bypass_constraint=false) {
 
 void Finger::update() {
   // Serial.print("start time: "); Serial.print(startTime); Serial.print("   duration: "); Serial.println(duration);
+
+  // Check if the duration of note completed
   if (front_on && (millis() - startTime >= duration)){
-    digitalWrite(front_solenoid_pin, LOW);
-    digitalWrite(back_solenoid_pin, LOW);
-    front_on = false;
     isPlaying = false;
   }
 
@@ -92,6 +91,13 @@ void Finger::update() {
     waiting_on = false;
     press_white_key(duration);
   }
+}
+
+
+void Finger::stopPressing(){
+  digitalWrite(front_solenoid_pin, LOW);
+  digitalWrite(back_solenoid_pin, LOW);
+  front_on = false;
 }
 
 

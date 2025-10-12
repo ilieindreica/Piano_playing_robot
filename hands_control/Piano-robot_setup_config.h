@@ -8,7 +8,7 @@
 #define TEMPO 20  // Considered for the whole note
 #define TIME_PER_BEAT (60000 / TEMPO)  // milliseconds
 
-#define TIME_FOR_SOLENOID_RETRACTION 50  // A small time delay to give solenoids that press the keys time to retract (useful when needed to press same key multimple times in a row) 
+#define TIME_FOR_SOLENOID_RETRACTION 20  // A small time delay to give solenoids that press the keys time to retract (useful when needed to press same key multimple times in a row) 
 
   /* CALCULATION EXAMPLE for one_key_step: 
     In full-step mode, it takes 200 steps for 1 revolution. The GT2-gear has, for example, 20 theet, with 2mm step.
@@ -18,7 +18,8 @@
 #define TEETH_STEP 2  // mm
 #define STEPS_PER_REVOLUTION 200
 #define DISTANCE_BETWEEN_KEYS 23  // mm
-#define ONE_KEY_STEP (STEPS_PER_REVOLUTION * DISTANCE_BETWEEN_KEYS / (NUM_OF_TEETH * TEETH_STEP))
+#define MICROSTEP 2
+#define ONE_KEY_STEP (STEPS_PER_REVOLUTION * DISTANCE_BETWEEN_KEYS / (NUM_OF_TEETH * TEETH_STEP)) * MICROSTEP
 #define ONE_KEY_ROTATION 15  // num of degrees to rotate one key to the left or to the right
 #define LIMIT_ANGLE_DEVIATION 35
 #define LIMIT_OVERLAP_ANGLE 5
@@ -30,7 +31,7 @@
 #define LEFT_LIMIT_EDGE 1/2  // the coordinate of hitting the left limit switch
 
 #define NUM_OF_FINGERS 5
-#define ROTATIONAL_REACH_OF_ONE_FINGER 2
+#define ROTATIONAL_REACH_OF_ONE_FINGER 1
 #define SPAN_OF_HAND (NUM_OF_FINGERS + 2 * ROTATIONAL_REACH_OF_ONE_FINGER)   // The number of keys a hand can reach by just rotating fingers
 #define START_POS_RIGHT_HAND (((2 * MAIN_OCTAVE - 1) * NUM_OF_WHITE_KEYS_IN_OCTAVE + 1) / 2)
 #define START_POS_LEFT_HAND (START_POS_RIGHT_HAND - NUM_OF_WHITE_KEYS_IN_OCTAVE)
