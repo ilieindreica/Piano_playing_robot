@@ -262,8 +262,8 @@ def rearrange_actions(actions):
     rearranged_actions = []
     for pos, fingers in actions:
         rotations, back, front, duration = zip(
-            *[(int(math.ceil(r) * 2), b, f, d) for b, f, r, d in fingers])             # !!!!REMOVE CEIL WHEN U WANT BLACK KEYS BACK
-        rearranged_actions.append([int(pos * 2), list(rotations), list(back), list(front), list(duration)])
+            *[(r, b, f, d) for b, f, r, d in fingers])
+        rearranged_actions.append([pos, list(rotations), list(back), list(front), list(duration)])
 
     return rearranged_actions
 

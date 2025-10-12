@@ -14,7 +14,7 @@ PitchInfo = namedtuple("PitchInfo", ["pitch_value", "pitch_name"])
 
 def display_cv_image(image, name='Image name', already_colored=False):
     if not already_colored:
-        image = (1 - image) * 255
+        image = (1-image) * 255
     cv2.imshow(name, image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
@@ -22,7 +22,7 @@ def display_cv_image(image, name='Image name', already_colored=False):
 
 class Staff:
     def __init__(self, music_sheet_parent):
-        self.nr_of_lines_above_or_below = 5
+        self.nr_of_lines_above_or_below = 2
         self.music_sheet_parent = music_sheet_parent
         self.x1 = 0
         self.y1 = 0
@@ -115,8 +115,17 @@ class Staff:
         filtered_contours2 = get_elliptical_contours(crop_for_fragmented_notes)
         comb_img = np.zeros(self.crop_binary.shape, dtype=np.uint8)
         cv2.drawContours(comb_img, filtered_contours + filtered_contours2, -1, (1, 0, 0), -1)
+
         self.noteheads_contours, _ = cv2.findContours(comb_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         self.noteheads_centroids = calculate_centroids(self.noteheads_contours)
+
+        comb_img = np.zeros(self.crop_binary.shape, dtype=np.uint8)
+        cv2.drawContours(comb_img, self.noteheads_contours, -1, (1, 0, 0), -1)
+        for c in self.noteheads_centroids:
+            cv2.putText(comb_img, str(int(c[0]))+' '+str(int(c[1])), (int(c[0]) + 5, int(c[1])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+        # display_cv_image(comb_img)
+
         self.noteheads_centroids.sort()
 
     def detect_barlines(self):
@@ -239,6 +248,7 @@ class Staff:
                             for j in range(notehead_idx, len(self.noteheads_centroids)):
                                 x = self.noteheads_centroids[j][0]
                                 y = self.noteheads_centroids[j][1]
+
                                 if x1 < x < x2 and y1 < y < y2:
                                     pitch_info = self.assign_pitch((x, y))
                                     new_noteheads_centroids.append((x, y))
@@ -267,7 +277,7 @@ class Staff:
                             note.pitch = list(dict.fromkeys(note.pitch))
 
                             # Check if there are stacked boxes (this mainly happens for whole-note chords)
-                            if prev_x1x2[0] < (x1 + x2) / 2 < prev_x1x2[1]:
+                            if prev_x1x2[0] < (x1 + x2) / 2 < prev_x1x2[1] and measure:
                                 measure[-1].pitch.extend(note.pitch)
                             else:
                                 measure.append(note)
@@ -282,6 +292,10 @@ class Staff:
             self.measures.append(measure)
 
         self.noteheads_centroids = new_noteheads_centroids
+        # comb_img = np.zeros(self.crop_binary.shape, dtype=np.uint8)
+        # for c in self.noteheads_centroids:
+        #     cv2.circle(comb_img, (int(c[0]), int(c[1])), 2, (1, 0, 0), thickness=-1)
+        # display_cv_image(comb_img)
 
     def assign_pitch(self, centroid):
         y_ref = bisect.bisect_right(self.intervals_idx, self.y2_local) - 1
@@ -372,7 +386,7 @@ class MusicSheet:
         self.model_clefs = None
         self.model_note = None
         self.slw_tolerance = 4
-        self.is_double_handed = True  # True if it contains bass-clef, False if only treble-clef
+        self.is_double_handed = True
         self.time_series = []
         if image is None:
             self.original_image = np.zeros((1, 1))
@@ -536,19 +550,55 @@ class MusicSheet:
         """If the music score is double-handed, the measures need to stay in sync, because if there are
         undetected notes, they will go out of phase"""
         if self.is_double_handed:
-            # Verify if the durations inside the measure of Treble-staff match the durations in Bass-staff measures
-            # add a REST to fill in the duration
+            # # Verify if the durations inside the measure of Treble-staff match the durations in Bass-staff measures
+            # # add a REST to fill in the duration
             for staff, next_staff in zip(self.all_staves[:-1], self.all_staves[1:]):
                 if staff.clef == 'Treble-clef' and next_staff.clef == 'Bass-clef':
                     # Assume the measures are synced between Treble and Bass
                     for measure, next_measure in zip(staff.measures, next_staff.measures):
-                        treble_duration_sum = sum(note.duration for note in measure)
-                        bass_duration_sum = sum(note.duration for note in next_measure)
+                        i = j = 0
+                        # print(f'before: {measure}#####{next_measure}')
+                        while i < len(measure) and j < len(next_measure):
+                            t_note, b_note = measure[i], next_measure[j]
+
+                            if t_note.duration == b_note.duration:
+                                i += 1
+                                j += 1
+                            elif t_note.duration < b_note.duration:
+                                t_time = t_note.duration
+                                i += 1
+                                while i < len(measure) and t_time + measure[i].duration <= b_note.duration:
+                                    t_time += measure[i].duration
+                                    i += 1
+                                if t_time < b_note.duration:
+                                    measure.insert(i, NoteOrRest(['REST'], b_note.duration - t_time))
+                                    i += 1
+                                    j += 1
+                                else:
+                                    j += 1
+                            else:
+                                b_time = b_note.duration
+                                j += 1
+                                while j < len(next_measure) and b_time + next_measure[j].duration <= t_note.duration:
+                                    b_time += next_measure[j].duration
+                                    j += 1
+                                if b_time < t_note.duration:
+                                    next_measure.insert(j, NoteOrRest(['REST'], t_note.duration - b_time))
+                                    j += 1
+                                    i += 1
+                                else:
+                                    i += 1
+                            # print(f'      after: {measure} ####### {next_measure}')
+
+                        treble_duration_sum = sum(note.duration for note in measure[i:])
+                        bass_duration_sum = sum(note.duration for note in next_measure[j:])
                         duration_diff = abs(treble_duration_sum - bass_duration_sum)
 
                         if duration_diff > 0:
                             rest_note = NoteOrRest(['REST'], duration_diff)
                             (measure if treble_duration_sum < bass_duration_sum else next_measure).append(rest_note)
+                            # print(f'            DIFFFFFFFFFFF       {duration_diff} {i}  {j}')
+                            # print(f'      after: {measure} ####### {next_measure}')
 
     def calculate_time_series(self):
         treble_time, bass_time = 0, 0
@@ -573,7 +623,6 @@ class MusicSheet:
                         treble_time += note.duration
                     else:
                         bass_time += note.duration
-
         self.time_series = [right_series, left_series]
 
     def run_detection(self):
