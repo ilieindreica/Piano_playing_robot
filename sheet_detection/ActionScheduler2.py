@@ -1,3 +1,4 @@
+from collections import deque
 import numpy as np
 import math
 from scipy.optimize import linear_sum_assignment
@@ -55,13 +56,21 @@ class Hand:
     def update_assignments(self, assignments):
         self.note_assignments.update(assignments)
 
-    def set_state(self, center, angles, assignments):
-        self.set_angles(angles)  # Set angles before position, so pos in fingers will get updated based on angle
+    def set_state(self, state, replace_assignments=False):
+        if isinstance(state, (list, tuple)) and len(state) == 3:
+            center, angles, assignments = state
+        else:
+            raise ValueError(f"Invalid state format {type(state)} {state}")
+
         self.set_position_by_center(center)
+        self.set_angles(angles)
+
+        if replace_assignments:
+            self.note_assignments.clear()
         self.update_assignments(assignments)
 
     def get_state(self):
-        return [self.center, self.get_angles(), self.note_assignments]
+        return [self.center, list(self.get_angles()), dict(self.note_assignments)]
 
     def get_full_state(self):
         back = [1 if self.is_finger_to_black_key(f) else 0 for f in self.fingers]
@@ -137,6 +146,43 @@ def keep_notes_in_span(notes, center_pos, span):
     return best
 
 
+def check_active_angles(angles, assignment):
+    num_of_f = cfg.config['NUM_OF_FINGERS']
+    positions = []
+    for i in range(num_of_f):
+        if i in assignment:
+            positions.append(i + angles[i])
+
+    if all(a >= b for a, b in zip(positions, positions[1:])):
+        return True
+    else:
+        return False
+
+
+def adjust_angles(angles, assignment):
+    """Make neutral fingers adjust their angles to comply to neighbours so to avoid collision"""
+    angles = angles[:]; n = len(angles); assignment = set(assignment); q = deque(assignment)
+    while q:
+        i = q.popleft()
+        a = angles[i]
+        # Propagate positive angles to the right
+        if a > 0 and i > 0:
+            j = i-1
+            # If propagation hits a fixed finger, mark as impossible move (ok=False)
+            if j in assignment and angles[j] < a: return{"ok": False}
+            if j not in assignment and angles[j] < a:
+                angles[j] = a
+                q.append(j)  # to propagate further
+        # Propagate negative angles to the left
+        if a < 0 and i < n-1:
+            j = i+1
+            if j in assignment and angles[j] > a: return{"ok": False}
+            if j not in assignment and angles[j] > a:
+                angles[j] = a
+                q.append(j)
+    return{"ok": True, "angles": angles}
+
+
 def generate_hand_centers(notes, half_span):
     if notes:
         minim = math.floor(min(notes))
@@ -198,68 +244,34 @@ def generate_hand_states(hand, active_notes, time):
     # Lock hand if fingers still active
     locked = bool(hand.note_assignments)
 
+    if locked and any(abs(n - hand.center) > half_span for n in active_notes):
+        r = hand.get_state()
+        r.extend([float('inf')])
+        return [r]
+
     # Keep notes in span
-    l_active = keep_notes_in_span(active_notes, hand.center, span)
+    active = keep_notes_in_span(active_notes, hand.center, span)
 
     # Determine possible centers for hands
-    left_centers = [hand.center] if locked else (generate_hand_centers(l_active, half_span) or
-                                                 [hand.center])
+    centers = [hand.center] if locked else (generate_hand_centers(active, half_span) or
+                                            [hand.center])
     bests = []
-    for lc in left_centers:
-        generated = generate_angles_and_assignments(l_active, lc, hand.get_availability_list())
+    for c in centers:
+        generated = generate_angles_and_assignments(active, c, hand.get_availability_list())
         for angles, assignment in generated:
             old_angles = hand.get_angles()
             for i, a in enumerate(old_angles):
                 angles[i] = angles[i] if angles[i] != 0 else old_angles[i]
-            cost = cost_for_move(hand, lc, angles, time)
-            bests.append([lc, angles, assignment, cost])
 
-    return bests
+            # if check_active_angles(angles, assignment):
+                # result = adjust_angles(angles, hand.note_assignments)
+                # if result['ok']:
+                #     cost = cost_for_move(hand, c, result['angles'], time)
+                #     bests.append([c, result['angles'], assignment, cost])
+            cost = cost_for_move(hand, c, angles, time)
+            bests.append([c, angles, assignment, cost])
 
-
-def assign_fingers_to_notes(fingers, notes_pos, offset=0):
-    available = [{'idx': i, 'pos': f.pos + offset, 'angle': f.angle}
-                 for i, f in enumerate(fingers) if f.available]
-    if not available or not notes_pos:
-        return [], {}
-
-    # Create a cost matrix (rows: notes, cols: fingers)
-    cost_matrix = np.zeros((len(notes_pos), len(available)))
-    for i, note_pos in enumerate(notes_pos):
-        for j, f in enumerate(available):
-            base_cost = abs(f['angle'] + f['pos'] - note_pos)
-            cost_matrix[i][j] = base_cost
-
-    # Solve optimal assignment problem (a modified Jonker-Volgenant algorithm with no initialization)
-    note_indices, finger_indices = linear_sum_assignment(cost_matrix)  # Minimize absolute cost
-
-    states, assignments = [], {}
-    for note_idx, j in zip(note_indices, finger_indices):
-        f = available[j]
-        finger_idx = f['idx']
-        new_angle = f['angle'] + f['pos'] - notes_pos[note_idx]
-
-        # MAX_ANGLE = cfg.config['ROTATIONAL_REACH_OF_ONE_FINGER']
-        # if abs(new_angle) > MAX_ANGLE:
-        #     new_angle = max(min(new_angle, MAX_ANGLE), -MAX_ANGLE)
-
-        # Check if note has decimal part in its position; that means it is a black key
-        press_black_key = notes_pos[note_idx] % 1 != 0
-        assignments[finger_idx] = notes_pos[note_idx]
-        states.append({
-            'finger_idx': finger_idx,
-            'angle': new_angle,
-        })
-
-    return states, assignments
-
-
-def simulate_finger_angles(hand, notes_pos, candidate_center):
-    states, assignment = assign_fingers_to_notes(hand.fingers, notes_pos, candidate_center - hand.center)
-    angles = hand.get_angles()
-    for s in states:
-        angles[s["finger_idx"]] = s["angle"]
-    return [(angles, assignment)]
+    return bests if bests else [[hand.center, hand.get_angles(), hand.note_assignments, float('inf')]]
 
 
 def cost_for_move(hand, new_center, new_angles, timestamp):
@@ -275,7 +287,7 @@ def cost_for_move(hand, new_center, new_angles, timestamp):
     return max(trans_cost, rot_cost) + alpha * posture
 
 
-def simulate_future(future, idx, left_hand, right_hand, beam_width=3):
+def simulate_future(future, idx, left_hand, right_hand, beam_width=5):
     safety_distance = cfg.config['SAFETY_DISTANCE_BETWEEN_HANDS']
 
     if idx >= len(future):
@@ -291,13 +303,12 @@ def simulate_future(future, idx, left_hand, right_hand, beam_width=3):
     if l_active or r_active:
         l_bests = generate_hand_states(left_hand, l_active, time)
         r_bests = generate_hand_states(right_hand, r_active, time)
-
         for (lc, l_angles, l_asgn, l_cost), (rc, r_angles, r_asgn, r_cost) in product(l_bests, r_bests):
             if abs(rc - lc) < safety_distance:
                 continue  # skip too-close hands
 
             total_cost = l_cost + r_cost
-            list_of_bests.append([total_cost, lc, l_angles, l_asgn, rc, r_angles, r_asgn])
+            list_of_bests.append([total_cost, [lc, l_angles, l_asgn], [rc, r_angles, r_asgn]])
 
     # Mark the last event where it finished playing all notes (rests between active events)
     if not l_active and l_inactive:
@@ -309,54 +320,69 @@ def simulate_future(future, idx, left_hand, right_hand, beam_width=3):
     right_hand.release_notes(r_inactive)
 
     list_of_bests.sort(key=lambda x: x[0])
-    list_of_bests = list_of_bests[:beam_width]
 
-    l_hand_copy = pickle.dumps(left_hand)
-    r_hand_copy = pickle.dumps(right_hand)
+    l_state_copy = left_hand.get_state()
+    r_state_copy = right_hand.get_state()
+
     if list_of_bests:
-        right_hand = pickle.loads(r_hand_copy)
-        for option in list_of_bests:
-            total_cost, lc, l_angles, l_asgn, rc, r_angles, r_asgn = option
-            left_hand.set_state(lc, l_angles, l_asgn)
-            right_hand.set_state(rc, r_angles, r_asgn)
+        i = 0
+        while i < beam_width and i < len(list_of_bests):
+            option = list_of_bests[i]
+            total_cost, l_state, r_state = option
+            left_hand.set_state(l_state)
+            right_hand.set_state(r_state)
 
             future_cost, _, _ = simulate_future(future, idx + 1, left_hand, right_hand)
-            left_hand = pickle.loads(l_hand_copy)
-            right_hand = pickle.loads(r_hand_copy)
-            option[0] += future_cost
+            left_hand.set_state(l_state_copy, replace_assignments=True)
+            right_hand.set_state(r_state_copy, replace_assignments=True)
 
+            option[0] += future_cost
+            i += 1
+
+            if future_cost == float('inf'):
+                beam_width += 1
+            else:
+                break
+
+        list_of_bests = list_of_bests[:i]
         list_of_bests.sort(key=lambda x: x[0])
 
         best_cost = list_of_bests[0][0]
-        l_state = list_of_bests[0][1:4]
-        r_state = list_of_bests[0][4:]
+        l_state = list_of_bests[0][1]
+        r_state = list_of_bests[0][2]
 
-        # print(idx, 'if', right_hand.get_full_state(), r_state[2], right_hand.note_assignments)
         return best_cost, l_state, r_state
 
     else:
-        # print(idx, 'else', right_hand.get_full_state(), right_hand.note_assignments)
         best_cost, l_state, r_state = simulate_future(future, idx + 1, left_hand, right_hand)
-        return best_cost, [l_state[0], l_state[1], {}], [r_state[0], r_state[1], {}]
+        left_hand.set_state(l_state_copy, replace_assignments=True)
+        right_hand.set_state(r_state_copy, replace_assignments=True)
+
+        # When no new notes are happening, propagate a future state only if the hand is idle
+        l_state = [l_state[0], l_state[1], {}] if not left_hand.note_assignments else left_hand.get_state()
+        r_state = [r_state[0], r_state[1], {}] if not right_hand.note_assignments else right_hand.get_state()
+
+        return best_cost, l_state, r_state
 
 
 def schedule_actions(time_series):
     right_hand, left_hand = Hand(), Hand()
-    right_hand.set_position_by_center(cfg.config['MAX_HAND_CENTER_POSITION'])
     left_hand.set_position_by_center(cfg.config['MIN_HAND_CENTER_POSITION'])
+    # right_hand.set_position_by_center(cfg.config['MAX_HAND_CENTER_POSITION'])
+    right_hand.set_position_by_center(20)
 
     sorted_time_keys = sorted(time_series.keys())
     window_size = cfg.config['FUTURE_WINDOW_SIZE']
 
     for current_idx, current_time in enumerate(sorted_time_keys):
         future = [(t, time_series[t]) for t in sorted_time_keys[current_idx: current_idx + window_size]]
-        _, l_state, r_state = simulate_future(future, 0, left_hand, right_hand, beam_width=1)
-        left_hand.set_state(l_state[0], l_state[1], l_state[2])
-        right_hand.set_state(r_state[0], r_state[1], r_state[2])
+        _, l_state, r_state = simulate_future(future, 0, left_hand, right_hand)
+        left_hand.set_state(l_state)
+        right_hand.set_state(r_state)
 
         print(time_series[sorted_time_keys[current_idx]]['left']['active'],
-              l_state, '  ', time_series[sorted_time_keys[current_idx]]['right']['active'], '  ',
-              right_hand.get_full_state(), right_hand.note_assignments)
+              left_hand.get_state(), '  ',  right_hand.get_full_state(), right_hand.note_assignments, '  ',
+              time_series[sorted_time_keys[current_idx]]['right']['active'],)
 
     return None, None
 
