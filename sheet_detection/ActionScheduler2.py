@@ -7,6 +7,7 @@ import pickle
 from itertools import product
 import copy
 from tkinter import messagebox
+import time
 
 
 class Finger:
@@ -146,6 +147,28 @@ def keep_notes_in_span(notes, center_pos, span):
     return best
 
 
+all_angle_combinations = []
+
+
+def generate_all_angle_combinations(start, idx=0, current=None):
+    if current is None:
+        current = []
+
+    if idx == cfg.config['NUM_OF_FINGERS']:
+        all_angle_combinations.append(current.copy())
+        return
+
+    # convert start to integer steps (e.g. 2 -> 4 steps of 0.5)
+    start_i = int(start * 2)
+    reach_i = int(cfg.config['ROTATIONAL_REACH_OF_ONE_FINGER'] * 2)
+
+    for si in range(start_i, -reach_i - 1, -1):
+        value = si * 0.5
+        current.append(value)
+        generate_all_angle_combinations(value, idx + 1, current)
+        current.pop()
+
+
 def check_active_angles(angles, assignment):
     num_of_f = cfg.config['NUM_OF_FINGERS']
     positions = []
@@ -237,6 +260,44 @@ def generate_angles_and_assignments(notes, center, availability_list):
     return results
 
 
+def find_possible_angles(center, notes, assignments):
+    results = []
+    nof = cfg.config['NUM_OF_FINGERS']
+    finger_offsets = np.arange(-(nof//2), nof//2 + 1)  # [-2, -1, 0, 1, 2]
+    notes_set = set(notes)
+
+    occupied_fingers = np.array(list(assignments.keys()))
+    occupied_targets = np.array([assignments[k] for k in occupied_fingers])
+
+    if all_angle_combinations:
+        for angles in all_angle_combinations:
+            angles = np.array(angles)
+            #
+            finger_positions = center + finger_offsets - angles
+
+            if len(occupied_fingers) > 0:
+                if not np.all(finger_positions[occupied_fingers] == occupied_targets):
+                    continue
+
+            matches = np.array([pos in notes_set for pos in finger_positions])
+
+            if len(occupied_fingers) > 0:
+                matches[occupied_fingers] = False
+
+            # notes assigned from free fingers
+            free_indices = np.where(matches)[0]
+            assigned = {int(idx): finger_positions[idx] for idx in free_indices}
+
+            # include assignments already fixed
+            assigned.update(assignments)
+
+            # check all notes are covered
+            if set(assigned.values()) == notes_set:
+                results.append((angles, assigned))
+
+        return results
+
+
 def generate_hand_states(hand, active_notes, time):
     span = cfg.config['SPAN_OF_HAND']
     half_span = math.ceil(span / 2)
@@ -258,16 +319,12 @@ def generate_hand_states(hand, active_notes, time):
     bests = []
     for c in centers:
         generated = generate_angles_and_assignments(active, c, hand.get_availability_list())
+        # generated = find_possible_angles(c, active, hand.note_assignments)
         for angles, assignment in generated:
             old_angles = hand.get_angles()
             for i, a in enumerate(old_angles):
                 angles[i] = angles[i] if angles[i] != 0 else old_angles[i]
 
-            # if check_active_angles(angles, assignment):
-                # result = adjust_angles(angles, hand.note_assignments)
-                # if result['ok']:
-                #     cost = cost_for_move(hand, c, result['angles'], time)
-                #     bests.append([c, result['angles'], assignment, cost])
             cost = cost_for_move(hand, c, angles, time)
             bests.append([c, angles, assignment, cost])
 
@@ -366,6 +423,10 @@ def simulate_future(future, idx, left_hand, right_hand, beam_width=5):
 
 
 def schedule_actions(time_series):
+    # generate_all_angle_combinations(cfg.config['ROTATIONAL_REACH_OF_ONE_FINGER'])
+
+    start = time.perf_counter()
+
     right_hand, left_hand = Hand(), Hand()
     left_hand.set_position_by_center(cfg.config['MIN_HAND_CENTER_POSITION'])
     # right_hand.set_position_by_center(cfg.config['MAX_HAND_CENTER_POSITION'])
@@ -383,6 +444,9 @@ def schedule_actions(time_series):
         print(time_series[sorted_time_keys[current_idx]]['left']['active'],
               left_hand.get_state(), '  ',  right_hand.get_full_state(), right_hand.note_assignments, '  ',
               time_series[sorted_time_keys[current_idx]]['right']['active'],)
+
+    end = time.perf_counter()
+    print(f"Execution time: {end - start:.6f} seconds")
 
     return None, None
 
