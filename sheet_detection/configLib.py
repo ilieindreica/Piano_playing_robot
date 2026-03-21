@@ -23,15 +23,17 @@ config = {
     'ROTATIONAL_REACH_OF_ONE_FINGER': 0,
     'MAX_HAND_CENTER_POSITION': 0,
     'MIN_HAND_CENTER_POSITION': 0,
-    'COST_PER_KEY_TRANSLATION': 20,
-    'COST_PER_KEY_ROTATION': 20,
-    'POSTURE_RELAX_TIME_MS': 20,
-    'COST_POSTURE_DEVIATION': 20,
-    'FUTURE_WINDOW_SIZE': 4
+    'EVENTS_TO_RESET_ANGLE': 5,
+    'COST_PER_KEY_TRANSLATION': 60,
+    'COST_PER_KEY_ROTATION': 50,
+    'POSTURE_RELAX_TIME_MS': 500,
+    'FINGER_ROTATED_PENALTY_COST': [],  # See at the end of load_config()
+    'FUTURE_WINDOW_SIZE': 4,
+    'MIDI_SPEED_FACTOR': 1,
 }
 
 
-def load_config(file_path="../hands_control/Piano-robot_setup_config.h"):
+def load_config(file_path="../hands_control_midi_and_txt/Piano-robot_setup_config.h"):
     """Loads the parameters on which the robot setup depends, and which are written in a separate file, to which Arduino
     also has access. This way is ensured that the parameters need to be modified in only one place."""
     expressions = {}  # Store expressions separately
@@ -65,6 +67,9 @@ def load_config(file_path="../hands_control/Piano-robot_setup_config.h"):
             config[key] = eval(eval_expr)
         except Exception as e:
             print(f"Error evaluating {key}: {e}")
+
+    n = config['NUM_OF_FINGERS']
+    config['FINGER_ROTATED_PENALTY_COST'] = [min(i + 1, n - i) * 10 for i in range(n)]
 
 
 load_config()

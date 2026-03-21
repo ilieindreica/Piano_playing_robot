@@ -7,6 +7,7 @@ import torch
 from Notes import NoteOrRest, NoteWithPosition
 from ultralytics import YOLO
 import configLib as cfg
+from itertools import groupby
 
 
 PitchInfo = namedtuple("PitchInfo", ["pitch_value", "pitch_name"])
@@ -22,7 +23,7 @@ def display_cv_image(image, name='Image name', already_colored=False):
 
 class Staff:
     def __init__(self, music_sheet_parent):
-        self.nr_of_lines_above_or_below = 2
+        self.nr_of_lines_above_or_below = 4
         self.music_sheet_parent = music_sheet_parent
         self.x1 = 0
         self.y1 = 0
@@ -378,6 +379,7 @@ class Staff:
 
 class MusicSheet:
     def __init__(self, image=None):
+        self.nr_notes_to_pad = None
         self.folder_path = None
         self.image_path = None
         self.max_staffline_width = 0
@@ -388,6 +390,7 @@ class MusicSheet:
         self.slw_tolerance = 4
         self.is_double_handed = True
         self.time_series = []
+        self.time_series_dict = {}
         if image is None:
             self.original_image = np.zeros((1, 1))
             self.binary_image = np.zeros((1, 1))
@@ -468,6 +471,7 @@ class MusicSheet:
         for j in range(1, len(line_beginnings)):
             # Create a new Staff object and associate it with the current music sheet
             staff = Staff(music_sheet_parent=self)
+            staff.nr_of_lines_above_or_below = self.nr_notes_to_pad
 
             start_of_line = line_beginnings[j]
 
@@ -557,50 +561,63 @@ class MusicSheet:
                     # Assume the measures are synced between Treble and Bass
                     for measure, next_measure in zip(staff.measures, next_staff.measures):
                         i = j = 0
-                        # print(f'before: {measure}#####{next_measure}')
+
+                        # Walk through both measures simultaneously, comparing duration blocks
                         while i < len(measure) and j < len(next_measure):
                             t_note, b_note = measure[i], next_measure[j]
 
+                            # Case 1: durations match exactly
                             if t_note.duration == b_note.duration:
                                 i += 1
                                 j += 1
+
+                            # Case 2: treble note is shorter -> accumulate treble durations
                             elif t_note.duration < b_note.duration:
                                 t_time = t_note.duration
                                 i += 1
+
+                                # Group consecutive treble notes until they match or exceed bass duration
                                 while i < len(measure) and t_time + measure[i].duration <= b_note.duration:
                                     t_time += measure[i].duration
                                     i += 1
+
+                                # If treble total is still shorter, insert a rest to compensate
                                 if t_time < b_note.duration:
                                     measure.insert(i, NoteOrRest(['REST'], b_note.duration - t_time))
                                     i += 1
                                     j += 1
                                 else:
                                     j += 1
+
+                            # Case 3: bass note is shorter -> accumulate bass durations
                             else:
                                 b_time = b_note.duration
                                 j += 1
+
+                                # Group consecutive bass notes until they match or exceed treble duration
                                 while j < len(next_measure) and b_time + next_measure[j].duration <= t_note.duration:
                                     b_time += next_measure[j].duration
                                     j += 1
+
+                                # If bass total is still shorter, insert a rest to compensate
                                 if b_time < t_note.duration:
                                     next_measure.insert(j, NoteOrRest(['REST'], t_note.duration - b_time))
                                     j += 1
                                     i += 1
                                 else:
                                     i += 1
-                            # print(f'      after: {measure} ####### {next_measure}')
 
+                        # Handle any remaining unmatched durations at the end of the measures
                         treble_duration_sum = sum(note.duration for note in measure[i:])
                         bass_duration_sum = sum(note.duration for note in next_measure[j:])
                         duration_diff = abs(treble_duration_sum - bass_duration_sum)
 
+                        # Append a final rest to the shorter measure to equalize total duration
                         if duration_diff > 0:
                             rest_note = NoteOrRest(['REST'], duration_diff)
                             (measure if treble_duration_sum < bass_duration_sum else next_measure).append(rest_note)
-                            # print(f'            DIFFFFFFFFFFF       {duration_diff} {i}  {j}')
-                            # print(f'      after: {measure} ####### {next_measure}')
 
-    def calculate_time_series(self):
+    def calculate_time_series2(self):
         treble_time, bass_time = 0, 0
         right_series = []
         left_series = []
@@ -625,9 +642,45 @@ class MusicSheet:
                         bass_time += note.duration
         self.time_series = [right_series, left_series]
 
-    def run_detection(self):
+    def calculate_time_series(self):
+        """Groups notes by time, in a dict structure with left and right lists at each time"""
+        treble_time, bass_time = 0, 0
+
+        for staff in self.all_staves:
+            for measure in staff.measures:
+                for note in measure:
+                    time_ref = treble_time if staff.clef == 'Treble-clef' else bass_time
+                    hand = 'right' if staff.clef == 'Treble-clef' else 'left'
+                    # the value for treble octave is chosen in order to accommodate for main_octave selected afterward
+                    octave_offset = -1 if staff.clef == 'Treble-clef' else -2  # Bass is one octave lower
+                    octave = cfg.config['MAIN_OCTAVE'] + octave_offset
+
+                    for pitch in note.pitch:
+                        piano_key_code = (cfg.config['NUM_OF_WHITE_KEYS_IN_OCTAVE'] * octave + pitch if
+                                          pitch != 'REST' else 'REST')
+
+                        time_frame = self.time_series_dict.setdefault(time_ref, {'left': {'active': [], 'inactive': []},
+                                                                                 'right': {'active': [], 'inactive': []}})[hand]
+                        if pitch != 'REST':
+                            time_frame['active'].append(piano_key_code)
+
+                    if staff.clef == 'Treble-clef':
+                        treble_time += note.duration
+                    else:
+                        bass_time += note.duration
+
+                    if note.pitch != ['REST']:
+                        # !!! Assumes that appearance of new note means end of previous note
+                        time_frame = self.time_series_dict.setdefault(time_ref + note.duration - 1e-4,
+                                                                      {'left': {'active': [], 'inactive': []},
+                                                                       'right': {'active': [], 'inactive': []}})[hand]
+                        time_frame['inactive'] = self.time_series_dict[time_ref][hand]['active']
+
+    def run_detection(self, nr_notes_to_pad=5):
         """Calls every method needed to detect anything necessary. At the end, computes the time series."""
+        self.nr_notes_to_pad = nr_notes_to_pad
         self.detect_staves()
+
         for staff in self.all_staves:
             staff.detect_with_yolo()
             staff.detect_noteheads()

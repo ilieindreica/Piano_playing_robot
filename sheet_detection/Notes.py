@@ -17,3 +17,12 @@ class NoteWithPosition:
 
     def __repr__(self):
         return f"NoteWithPosition(position={self.pos}, duration={self.duration})"
+
+    def __eq__(self, other):
+        if not isinstance(other, NoteWithPosition):
+            return NotImplemented
+        return self.pos == other.pos and self.duration == other.duration
+
+    def __hash__(self):
+        # Make it usable in sets or dicts
+        return hash((self.pos, self.duration))
