@@ -1,3 +1,4 @@
+#include "pins_arduino.h"
 #include "HardwareSerial.h"
 #include "Arduino.h"
 #include "Hand.h"
@@ -15,11 +16,11 @@ Hand::Hand(int interface, int step, int dir) : motor(interface, step, dir){
 
 //
 Hand::Hand(int interface, int step, int dir, int *solenoid_pins, int *servo_pins) : motor(interface, step, dir) {
-  command_index = 0;
-  command_list_length = 0;
-  compensation = 0;
   for (int i = 0; i < NUM_OF_FINGERS; i++) {
     previous_angles[i] = 0;
+    previous_extensions[i] = 0;
+    command.angles[i] = 0;
+    command.back_solenoids_states[i] = 0;
   }
   setFingers(solenoid_pins, servo_pins);
 }
@@ -57,35 +58,16 @@ void Hand::setMotorParams(int acc, int maxSpeed){
 }
 
 
-void Hand::setState(State newState){
-  current_state = newState;
-}
-
-
 void Hand::setTimePerBeat(float tpb){
   time_per_beat = tpb;
 }
 
 
-void Hand::setEquilibriumAngles(int *angles){
-  for (int i = 0; i < NUM_OF_FINGERS; i++){
-    fingers[i].setEquilibriumAngle(angles[i]);
+void Hand::setRotationAngles(const int* matrix){
+  rotationAngles = matrix;
+  for (int i = 0; i < NUM_OF_FINGERS; i++) {
+    fingers[i].setEquilibriumAngle(rotationAngles[i * ROT_COLS + (ROT_COLS / 2)]);
   }
-}
-
-
-void Hand::setHandedness(char h){
-  handedness_character = h;
-}
-
-
-void Hand::setTheOtherHand(Hand &other){
-  the_other_hand = &other;
-}
-
-
-Hand::State Hand::getState() const{
-  return current_state;
 }
 
 
@@ -95,8 +77,24 @@ Finger& Hand::getFinger(int finger_index){
 }
 
 
-char Hand::getHandedness(){
-  return handedness_character;
+const int* Hand::getRotationAngles() {
+  return rotationAngles;
+}
+
+
+// Rotates all fingers according to command. Returns the biggest delay needed for the maximum rotation angle.
+int Hand::rotateFingers(){
+  int maxDiff = 0;
+  for(int i = 0; i < NUM_OF_FINGERS; i++){
+    float newAngle = command.angles[i];
+    if(newAngle != previous_angles[i]){
+      int diff = rotateFingerToKey(i,newAngle);
+      if(diff > maxDiff) maxDiff = diff;
+    }
+  }
+
+  int delayMs = (int)((maxDiff / 60.0f) * 100.0f);  // 0.1s per 60°
+  return delayMs;
 }
 
 
@@ -108,51 +106,84 @@ void Hand::rotateFinger(int finger_index, int newAngle){
 
 // Rotates the finger at "index" to reach the key at "key_index" away from finger's equilibrium position
 // Negative numbers -> rotation to the right; Positive numbers -> rotation to the left
-void Hand::rotateFingerToKey(int finger_index, float key_index){
-  // float becausehere may be half rotations, to rotate to black_keys
-  int eq_angle = fingers[finger_index].getEquilibriumAngle();
-  float angle = eq_angle + key_index * ONE_KEY_ROTATION;
-  // if(angle != eq_angle){
-  //   Serial.print(command_index); Serial.print("-> ");
-  //   Serial.println(angle);
-  // }
-  fingers[finger_index].rotate(angle, true);
+// Returns the difference between new and old angles
+int Hand::rotateFingerToKey(int finger_index, float key_index) {
+  int col = (int)(-key_index * 2) + (ROT_COLS / 2);
+  int target_angle = rotationAngles[finger_index * ROT_COLS + col];
+  return fingers[finger_index].rotate(target_angle);
+}
+
+
+bool Hand::extendFingers(){
+  bool needs_ext = false;
+
+  for(int i = 0; i < NUM_OF_FINGERS; i++){
+    uint8_t state = command.back_solenoids_states[i];
+    
+    if(state != previous_extensions[i]){
+      fingers[i].extendOrRetract(state);
+      needs_ext = true;
+    }
+  }
+
+  return needs_ext;
+}
+
+// Activate fingers to press keys, according to command. Returns true if at least one pressing takes place.
+bool Hand::press(){
+  bool does_press = false;
+  for(int i = 0; i < NUM_OF_FINGERS; i++){
+    if (command.front_solenoids_states[i] == 1){
+      does_press = true;
+    }
+    fingers[i].press_white_key(command.front_solenoids_states[i]);
+  }
+
+  return does_press;
 }
 
 
 // Resets finger rotation angle to EQUILIBRIUM_ANGLE
-void Hand::getFingersInNormalPosition(){
+void Hand::putFingersInNormalPosition(){
   for (int i = 0; i < NUM_OF_FINGERS; i++){
     int eq_angle = fingers[i].getEquilibriumAngle();
-    fingers[i].rotate(eq_angle, true);
+    fingers[i].rotate(eq_angle);
   }
 }
 
 
 //
 void Hand::moveToKey(float key_index){
+  motor.enableOutputs();
   current_key_index = key_index;
   key_index = constrain(key_index, 0, NUM_OF_WHITE_KEYS);
   motor.moveTo(key_index * ONE_KEY_STEP);
   motor.runToPosition();
+  motor.disableOutputs();
 }
 
 
-// Returns true if any finger is playing a note, false otherwise
-bool Hand::isPlaying(){
-  for (int i = 0; i < NUM_OF_FINGERS; i++){
-    if(fingers[i].isPlaying) return true;
+void Hand::move(){
+  motor.run();
+}
+
+
+// Sets moveTo target for motor from command. Needs run() call separatelly to allow 
+// both hands be called together
+void Hand::setTargetPosition(){
+  current_key_index = command.position;
+  float key_index = constrain(command.position, 0, NUM_OF_WHITE_KEYS);
+  motor.moveTo(key_index * ONE_KEY_STEP);
+}
+
+
+void Hand::releaseFingers(){
+  for(int i = 0; i < NUM_OF_FINGERS; i++){
+    if(command.front_solenoids_states[i] == 0){
+      fingers[i].release();
+    }
   }
-  return false;
 }
-
-
-// bool Hand::isCompensationRequested(){
-//   for (int i = 0; i < NUM_OF_FINGERS; i++){
-//     if(fingers[i].requestCompensation) return true;
-//   }
-//   return false;
-// }
 
 
 // 
@@ -162,235 +193,44 @@ int Hand::readLimitSwitch(){
 
 
 void Hand::resetCommand() {
-  command.position = 0;
   for (int i = 0; i < NUM_OF_FINGERS; i++) {
     command.angles[i] = 0;
     command.back_solenoids_states[i] = 0;
     command.front_solenoids_states[i] = 0;
-    command.durations[i] = 0;
-  }
-  command.note_rank = 0;
-}
-
-
-// void Hand::increaseFingerDuration(float increase){
-//   for (int i = 0; i < NUM_OF_FINGERS; i++){
-//     // if(fingers[i].requestCompensation){
-//       fingers[i].increaseDuration(increase);
-//     //   fingers[i].requestCompensation = false;
-//     //   fingers[i].stopPressing = true;
-//     // }
-//   }
-// }
-
-
-void Hand::stopPressing(){
-  for(int i = 0; i < NUM_OF_FINGERS; i++){
-    fingers[i].stopPressing();
-  }
-}
-
-
-float Hand::getCompensation(){
-  return compensation;
-}
-
-
-void Hand::resetCompensation(){
-  compensation = 0;
-}
-
-bool recalculatingWaiterNeeded = false;
-// Update function; needs to be called in a loop; Updates the hand state and ensures correct duration of notes without blocking
-void Hand::update(unsigned long reference_time=millis()) {
-  // Serial.print("STATE: "); Serial.print(static_cast<int>(current_state)); Serial.println(stateToStr(current_state));
-  
-  // Update fingers
-  for (int i = 0; i < NUM_OF_FINGERS; i++) {
-    fingers[i].update();
-  }
-  
-  // STATE MACHINE
-  switch(current_state){
-    // IDLE
-    case State::IDLE:{
-        if (command_index < command_list_length){
-          requestCommand();
-          command_index++;
-          current_state = State::CHANGING_POSTURE;
-        }
-        else{
-          resetCommand();
-          current_state = State::FINISHED;
-        }
-      break;
-    }
-
-    // CHANGING POSTURE
-    case State::CHANGING_POSTURE:{
-      /// add rotation
-      start = millis();
-      bool needs_waiting = false;
-      for (int i = 0; i < NUM_OF_FINGERS; i++){
-        int angle = command.angles[i];
-        if (angle != previous_angles[i]){
-          rotateFingerToKey(i, angle);
-          needs_waiting = true;
-          previous_angles[i] = angle;
-        }
-       
-        // extension
-        // if(command.back_solenoids_states[i] == 1){
-        //   fingers[i].extend();
-        //   needs_waiting = true;
-        // }
-      }
-
-      waiting_start = millis();
-
-      moveToKey(command.position);
-      stop = millis();  
-
-      // Wait only if fingers need to rotate
-      if(needs_waiting){
-        // Serial.print(handedness_character); Serial.println(" needs waiting ");
-        /// put it in int cause otherwise, because the other variables are unsigned, it will be interpreted as unsigned as well
-        int aux = 70 - (stop - waiting_start); 
-
-        // Because moveToKey() is blocking, some waiting time needed for servo rotation already passed. So we have to wait only
-        // the difference time. But if more than enough time passed, no need for any more waiting (so waiting_time = 0 to not be negative)
-        waiting_time = max(0, aux); 
-      }
-      else{
-        waiting_time = 0;
-      }
-
-      current_state = State::WAITING;
-      state_after_waiting = State::READY_TO_PLAY;
-      // current_state = State::READY_TO_PLAY;
-      break;
-    }
-
-    // READY TO PLAY
-    case State::READY_TO_PLAY:{
-        State other_state = the_other_hand->getState();
-        // Serial.print(handedness_character); Serial.print(" "); Serial.print(command_index);
-        // Serial.print(stateToStr(current_state)); Serial.print("   "); Serial.print(stateToStr(other_state)); Serial.print("  ");
-        // Serial.println(command.note_rank);
-        if (other_state == State::READY_TO_PLAY || other_state == State::PLAYING || other_state == State::FINISHED ||
-            other_state == State::PRESSING) {
-          current_state = State::PRESSING;
-        }
-
-        if(recalculatingWaiterNeeded){
-          // Serial.print(handedness_character);Serial.print(command.note_rank); Serial.print(" "); 
-          // Serial.print(isTheWaiter); Serial.print(" ");Serial.println(the_other_hand->command.note_rank);
-          if(command.note_rank > the_other_hand->command.note_rank){
-            isTheWaiter = true;
-            the_other_hand->isTheWaiter = false;
-          }
-          else{
-            the_other_hand->isTheWaiter = true;
-            isTheWaiter = false;
-          }
-
-          recalculatingWaiterNeeded = false;
-        }
-      break;
-    }
-
-    // PRESSING
-    case State::PRESSING:{
-      for (int i = 0; i < NUM_OF_FINGERS; i++){
-        fingers[i].press_white_key(command.durations[i], command.front_solenoids_states[i]);
-      }
-      current_state = State::PLAYING;
-      break;
-    }
-
-    // PLAYING
-    case State::PLAYING:{
-      if (!isPlaying()){
-        
-        if(!isSolo){
-          if(the_other_hand->command.note_rank >= command.note_rank && !isTheWaiter){
-            Serial.print(command_index);Serial.print(handedness_character);Serial.print(command.note_rank); Serial.print(" "); 
-            Serial.print(isTheWaiter); Serial.print(" ");Serial.println(the_other_hand->command.note_rank);
-            the_other_hand->command.note_rank -= command.note_rank;
-            command.note_rank = 0;
-         }
-        }
-        else{
-          command.note_rank = 0;
-        }
-       
-        if(command.note_rank <= 0){
-          waiting_start = reference_time;
-          stopPressing();
-          current_state = State::WAIT_FOR_SOLENOID_RETRACTION; 
-        }
-      }
-      break;
-    }
-    
-    // WAITING
-    case State::WAITING:{
-      if (millis() - waiting_start >= waiting_time){
-        current_state = state_after_waiting;
-        waiting_start = 0;
-        waiting_time = 0;
-      }
-      break;
-    }
-
-    case State::WAIT_FOR_SOLENOID_RETRACTION:{
-      if(millis() - waiting_start >= TIME_FOR_SOLENOID_RETRACTION){
-        current_state = State::IDLE;
-        waiting_start = 0;
-      }
-      break;
-    }
-  }
-
-}
-
-
-bool Hand::isWaiting(){
-  if (millis() - waiting_start >= waiting_time){
-    waiting_time = 0;
-    return false;
-  }
-  return true;
-}
-
-
-void Hand::giveCompensation(float comp){
-  Serial.println(stateToStr(the_other_hand->getState()));
-  if(the_other_hand->getState() == State::PLAYING || the_other_hand->getState() == State::IDLE){
-    the_other_hand->increaseFingerDuration(comp);
   }
 }
 
 
 void Hand::requestCommand(){
-  // Tell which hand is requesting
-  Serial.println(handedness_character);
+  // Save the current command states into relevant previous_ variables
+  for(int i = 0; i < NUM_OF_FINGERS; i++){
+    previous_angles[i] = command.angles[i];
+    previous_extensions[i] = command.back_solenoids_states[i];
+  }
   // Read the commands for hand
   readCommandStruct(command);
 }
 
 
-const char* Hand::stateToStr(State s) {
-  switch (s) {
-    case State::IDLE: return "IDLE";
-    case State::WAITING: return "WAITING";
-    case State::CHANGING_POSTURE: return "CHANGING_POSTURE";
-    case State::READY_TO_PLAY: return "READY_TO_PLAY";
-    case State::PRESSING: return "PRESSING";
-    case State::PLAYING: return "PLAYING";
-    case State::FINISHED: return "FINISHED";
-    case State::WAIT_FOR_SOLENOID_RETRACTION: return "WAIT_FOR_SOLENOID_RETRACTION";
-    default: return "UNKNOWN";
+bool Hand::allFingersOff(){
+
+  for(int i = 0; i < NUM_OF_FINGERS; i++){
+    if(command.front_solenoids_states[i] == 1){
+      return false;
+    }
   }
+
+  return true;
+
 }
+
+
+// Stop pressing, reset angles, clear command
+void Hand::stopAndReset(){
+  resetCommand();
+  releaseFingers();
+  extendFingers();
+  bool ok = rotateFingers();
+}
+
 

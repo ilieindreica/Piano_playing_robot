@@ -28,7 +28,7 @@ float read_float_from_serial() {
   }
 
   // return round(data.f);
-  return (int)data.f;  // daca nu apesi pe clapele negre, sa nu existe pericol de a se ciocni degetele intre ele
+  return data.f;  // pune (int) daca nu apesi pe clapele negre, sa nu existe pericol de a se ciocni degetele intre ele
 }
 
 
@@ -51,13 +51,6 @@ void readCommandStruct(Hand::CommandStruct &command) {
   for (int i = 0; i < NUM_OF_FINGERS; i++) {
       command.front_solenoids_states[i] = Serial.read();
   }
-
-  for (int i = 0; i < NUM_OF_FINGERS; i++) {
-      command.durations[i] = read_int_from_serial();
-  }
-
-  command.note_rank = read_int_from_serial();
-
 }
 
 
@@ -82,13 +75,6 @@ void printCommandStruct(const Hand::CommandStruct &cmd) {
   Serial.println("Front Solenoids: ");
   for (int i = 0; i < NUM_OF_FINGERS; i++) {
       Serial.print(cmd.front_solenoids_states[i]);
-      Serial.print(" ");
-  }
-  Serial.println();
-
-  Serial.println("Durations: ");
-  for (int i = 0; i < NUM_OF_FINGERS; i++) {
-      Serial.print(cmd.durations[i]);
       Serial.print(" ");
   }
   Serial.println();
