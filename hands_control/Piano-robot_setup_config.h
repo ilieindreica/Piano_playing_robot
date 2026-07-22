@@ -3,7 +3,9 @@
 /* --- This file contains parameters for piano-robot setup --- */
 #define TMC2208_DRIVER 0
 #define A4988_DRIVER 1
-#define INSTALLED_DRIVER A4988_DRIVER
+#define TMC2209_DRIVER 2
+#define INSTALLED_DRIVER TMC2209_DRIVER
+// #define INSTALLED_DRIVER A4988_DRIVER
 
 #define NUM_OF_OCTAVES 5
 #define NUM_OF_WHITE_KEYS 36  // Needed to know the distance the robot can travel
@@ -22,8 +24,12 @@
 #define DISTANCE_BETWEEN_KEYS 23  // mm
 #if INSTALLED_DRIVER == A4988_DRIVER
   #define MICROSTEP 1
-#else
+#elif INSTALLED_DRIVER == TMC2208_DRIVER
   #define MICROSTEP 2
+#elif INSTALLED_DRIVER == TMC2209_DRIVER
+  #define MICROSTEP 2
+#else
+  #error "Unsupported stepper driver selected"
 #endif
 #define ONE_KEY_STEP (STEPS_PER_REVOLUTION * DISTANCE_BETWEEN_KEYS / (NUM_OF_TEETH * TEETH_STEP)) * MICROSTEP
 #define ONE_KEY_ROTATION 20  // num of degrees to rotate one key to the left or to the right

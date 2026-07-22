@@ -2,7 +2,7 @@
 #include "HardwareSerial.h"
 #include "Arduino.h"
 #include "Hand.h"
-#include "SerialCommunication.h"
+#include "Communication.h"
 
 //
 Hand::Hand() {

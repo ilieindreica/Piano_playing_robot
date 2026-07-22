@@ -1,4 +1,3 @@
-// Calibration.cpp
 #include "Calibration.h"
 
 // Forward declarations of globals from .ino

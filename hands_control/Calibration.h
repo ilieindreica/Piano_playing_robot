@@ -1,4 +1,3 @@
-// Calibration.h
 #pragma once
 #include "Hand.h"
 
